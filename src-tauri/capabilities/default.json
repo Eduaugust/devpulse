@@ -1,0 +1,69 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capabilities for DevPulse",
+  "windows": ["main", "tray-panel"],
+  "permissions": [
+    "core:default",
+    "core:window:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-close",
+    "core:window:allow-set-focus",
+    "core:window:allow-set-position",
+    "core:window:allow-set-size",
+    "core:window:allow-center",
+    "core:window:allow-is-visible",
+    "core:window:allow-start-dragging",
+    "core:tray:default",
+    "core:tray:allow-set-icon",
+    "core:tray:allow-set-tooltip",
+    "core:event:default",
+    "core:event:allow-listen",
+    "core:event:allow-emit",
+    "opener:default",
+    "sql:default",
+    "sql:allow-load",
+    "sql:allow-execute",
+    "sql:allow-select",
+    "sql:allow-close",
+    "store:default",
+    "notification:default",
+    "notification:allow-notify",
+    "notification:allow-is-permission-granted",
+    "notification:allow-request-permission",
+    "dialog:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "autostart:default",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled",
+    "os:default",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        { "name": "gh", "cmd": "gh", "args": true },
+        { "name": "git", "cmd": "git", "args": true },
+        { "name": "claude", "cmd": "claude", "args": true },
+        { "name": "code", "cmd": "code", "args": true },
+        { "name": "open", "cmd": "open", "args": true },
+        { "name": "xdg-open", "cmd": "xdg-open", "args": true },
+        { "name": "gnome-terminal", "cmd": "gnome-terminal", "args": true },
+        { "name": "konsole", "cmd": "konsole", "args": true },
+        { "name": "xterm", "cmd": "xterm", "args": true },
+        { "name": "alacritty", "cmd": "alacritty", "args": true },
+        { "name": "wt", "cmd": "wt.exe", "args": true },
+        { "name": "powershell", "cmd": "powershell", "args": true }
+      ]
+    },
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        { "name": "claude", "cmd": "claude", "args": true }
+      ]
+    },
+    "shell:allow-kill",
+    "shell:allow-open"
+  ]
+}
