@@ -24,16 +24,21 @@ export interface TerminalOption {
   label: string;
 }
 
+const BUILTIN_TERMINAL: TerminalOption = { value: "builtin", label: "DevPulse (built-in)" };
+
 const MAC_TERMINALS: TerminalOption[] = [
+  BUILTIN_TERMINAL,
   { value: "terminal", label: "Terminal.app" },
   { value: "iterm2", label: "iTerm2" },
   { value: "warp", label: "Warp" },
 ];
 const WINDOWS_TERMINALS: TerminalOption[] = [
+  BUILTIN_TERMINAL,
   { value: "windows-terminal", label: "Windows Terminal" },
   { value: "powershell", label: "PowerShell" },
 ];
 const LINUX_TERMINALS: TerminalOption[] = [
+  BUILTIN_TERMINAL,
   { value: "gnome-terminal", label: "GNOME Terminal" },
   { value: "konsole", label: "Konsole" },
   { value: "alacritty", label: "Alacritty" },

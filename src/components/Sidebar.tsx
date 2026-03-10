@@ -13,6 +13,7 @@ import {
   Terminal,
   GitPullRequestArrow,
   Zap,
+  Receipt,
 } from "lucide-react";
 
 const navItems = [
@@ -24,6 +25,7 @@ const navItems = [
   { to: "/connections", icon: Link2, label: "Connections" },
   { to: "/settings", icon: Settings, label: "Settings" },
   { to: "/reports", icon: FileText, label: "Reports" },
+  { to: "/invoices", icon: Receipt, label: "Invoices" },
 ];
 
 export function Sidebar() {

@@ -1302,7 +1302,7 @@ function ReviewHistory() {
     // Set repo/PR context if available so "Post to GitHub" works
     if (review.repo) {
       const [owner, name] = review.repo.split("/");
-      setSelectedRepo({ id: null, owner, name, full_name: review.repo, added_at: "", base_branch: "development" });
+      setSelectedRepo({ id: null, owner, name, full_name: review.repo, added_at: "", base_branch: "development", provider: "github" });
     }
     if (review.prNumber) {
       setSelectedPr({
