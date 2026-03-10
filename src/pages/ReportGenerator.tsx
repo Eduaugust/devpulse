@@ -20,6 +20,7 @@ import {
   Trash2,
   Terminal,
 } from "lucide-react";
+import { toLocalDateString, getCurrentTimezoneOffset } from "@/lib/timezone";
 
 async function runGit(args: string[], cwd: string): Promise<string> {
   try {
@@ -42,14 +43,21 @@ async function runGh(args: string[]): Promise<string> {
 }
 
 export function ReportGenerator() {
-  const today = new Date().toISOString().split("T")[0];
+  const today = toLocalDateString();
   const [dateFrom, setDateFrom] = useState(today);
   const [dateTo, setDateTo] = useState(today);
   const [copied, setCopied] = useState(false);
 
+  const { getSetting } = useSettingsStore();
+  const connOn = (key: string) => getSetting(`conn_${key}`, "true") === "true";
+
+  const gitEnabled = connOn("github") || connOn("gitlab") || connOn("azure") || connOn("bitbucket");
+  const kimaiEnabled = connOn("kimai");
+  const calendarEnabled = connOn("calendar");
+
   const [includeGit, setIncludeGit] = useState(true);
   const [includeGitHub, setIncludeGitHub] = useState(true);
-  const [includeKimai, setIncludeKimai] = useState(false);
+  const [includeKimai, setIncludeKimai] = useState(true);
   const [includeCalendar, setIncludeCalendar] = useState(true);
 
   // Persistent state via Zustand (survives tab switches)
@@ -110,6 +118,7 @@ export function ReportGenerator() {
 
     const { getSetting } = useSettingsStore.getState();
     const author = getSetting("github_username", "");
+    const tzOffset = getCurrentTimezoneOffset();
     const afterDate = dateFrom;
     // Add one day for --before (git uses exclusive end)
     const beforeDate = new Date(new Date(dateTo).getTime() + 86400000)
@@ -223,8 +232,8 @@ export function ReportGenerator() {
           const kimaiUrl = await getCredential("kimai_url");
           const kimaiToken = await getCredential("kimai_token");
           if (kimaiUrl && kimaiToken) {
-            const kimaiBegin = `${afterDate}T00:00:00`;
-            const kimaiEnd = `${beforeDate}T00:00:00`;
+            const kimaiBegin = `${afterDate}T00:00:00${tzOffset}`;
+            const kimaiEnd = `${beforeDate}T00:00:00${tzOffset}`;
 
             // Fetch current period entries
             try {
@@ -250,33 +259,26 @@ export function ReportGenerator() {
               prompt += `Failed to fetch timesheets: ${e}\n\n`;
             }
 
-            // Fetch recent history (past 7 days) for project/activity context
+            // Fetch last 10 entries as reference for format/style
             try {
-              const historyStart = new Date(new Date(afterDate).getTime() - 7 * 86400000);
-              const historyBegin = `${historyStart.toISOString().split("T")[0]}T00:00:00`;
+              // Use a wide window (past 30 days) to ensure we get 10 entries
+              const historyStart = new Date(new Date(afterDate).getTime() - 30 * 86400000);
+              const historyBegin = `${historyStart.toISOString().split("T")[0]}T00:00:00${tzOffset}`;
               const recentEntries = await fetchKimaiTimesheets(kimaiUrl, kimaiToken, historyBegin, kimaiBegin);
-              if (recentEntries.length > 0) {
-                // Collect unique projects and activities for context
-                const projects = new Map<string, number>();
-                const activities = new Map<string, number>();
-                for (const entry of recentEntries) {
+              const last10 = recentEntries.slice(0, 10);
+              if (last10.length > 0) {
+                prompt += `## Last ${last10.length} Entries (reference for format/style)\n\n`;
+                prompt += "Use these entries as a reference for how to write descriptions, which projects and activities to use, and the typical format:\n\n";
+                for (const entry of last10) {
                   const pName = typeof entry.project === "object" && entry.project
-                    ? String((entry.project as Record<string, unknown>).name ?? "")
-                    : "";
+                    ? (entry.project as Record<string, unknown>).name ?? `ID:${(entry.project as Record<string, unknown>).id ?? "?"}`
+                    : entry.project != null ? `ID:${entry.project}` : "No project";
                   const aName = typeof entry.activity === "object" && entry.activity
-                    ? String((entry.activity as Record<string, unknown>).name ?? "")
-                    : "";
-                  if (pName) projects.set(pName, (projects.get(pName) ?? 0) + (entry.duration ?? 0));
-                  if (aName) activities.set(aName, (activities.get(aName) ?? 0) + (entry.duration ?? 0));
-                }
-                prompt += `## Recent History (past 7 days — ${recentEntries.length} entries)\n\n`;
-                prompt += "Available projects (by recent usage):\n";
-                for (const [name, secs] of [...projects.entries()].sort((a, b) => b[1] - a[1])) {
-                  prompt += `- ${name} (${(secs / 3600).toFixed(1)}h)\n`;
-                }
-                prompt += "\nAvailable activities (by recent usage):\n";
-                for (const [name, secs] of [...activities.entries()].sort((a, b) => b[1] - a[1])) {
-                  prompt += `- ${name} (${(secs / 3600).toFixed(1)}h)\n`;
+                    ? (entry.activity as Record<string, unknown>).name ?? `ID:${(entry.activity as Record<string, unknown>).id ?? "?"}`
+                    : entry.activity != null ? `ID:${entry.activity}` : "No activity";
+                  const hours = entry.duration ? (entry.duration / 3600).toFixed(1) : "?";
+                  const desc = entry.description || "(no description)";
+                  prompt += `- [${entry.begin}] ${pName} / ${aName} (${hours}h) — ${desc}\n`;
                 }
                 prompt += "\n";
               }
@@ -297,7 +299,8 @@ export function ReportGenerator() {
         try {
           const calendarCreds = await getCredential("calendar_credentials");
           if (calendarCreds) {
-            const events = await commands.fetchCalendarEvents(calendarCreds, afterDate, dateTo);
+            const calEmail = await getCredential("calendar_email");
+            const events = await commands.fetchCalendarEvents(calendarCreds, afterDate, dateTo, calEmail || undefined, tzOffset);
             if (events.length > 0) {
               for (const ev of events) {
                 if (ev.all_day) {
@@ -436,10 +439,11 @@ export function ReportGenerator() {
       const kimaiUrl = await getCredential("kimai_url");
       const kimaiToken = await getCredential("kimai_token");
       if (kimaiUrl && kimaiToken) {
-        const begin = `${dateRange.split(" to ")[0] || dateRange}T00:00:00`;
+        const tz = getCurrentTimezoneOffset();
+        const begin = `${dateRange.split(" to ")[0] || dateRange}T00:00:00${tz}`;
         const endDate = dateRange.split(" to ")[1] || dateRange;
         const endNext = new Date(new Date(endDate).getTime() + 86400000).toISOString().split("T")[0];
-        const entries = await fetchKimaiTimesheets(kimaiUrl, kimaiToken, begin, `${endNext}T00:00:00`);
+        const entries = await fetchKimaiTimesheets(kimaiUrl, kimaiToken, begin, `${endNext}T00:00:00${tz}`);
         if (entries.length > 0) {
           existingEntries = "\n\nEXISTING Kimai entries (do NOT duplicate these):\n";
           for (const entry of entries) {
@@ -543,33 +547,39 @@ export function ReportGenerator() {
             />
             Git (local repos)
           </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={includeGitHub}
-              onChange={(e) => setIncludeGitHub(e.target.checked)}
-              className="rounded"
-            />
-            GitHub (PRs, reviews)
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={includeKimai}
-              onChange={(e) => setIncludeKimai(e.target.checked)}
-              className="rounded"
-            />
-            Kimai
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={includeCalendar}
-              onChange={(e) => setIncludeCalendar(e.target.checked)}
-              className="rounded"
-            />
-            Google Calendar
-          </label>
+          {gitEnabled && (
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={includeGitHub}
+                onChange={(e) => setIncludeGitHub(e.target.checked)}
+                className="rounded"
+              />
+              PRs & reviews
+            </label>
+          )}
+          {kimaiEnabled && (
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={includeKimai}
+                onChange={(e) => setIncludeKimai(e.target.checked)}
+                className="rounded"
+              />
+              Kimai (last 10 entries)
+            </label>
+          )}
+          {calendarEnabled && (
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={includeCalendar}
+                onChange={(e) => setIncludeCalendar(e.target.checked)}
+                className="rounded"
+              />
+              Google Calendar
+            </label>
+          )}
         </div>
 
         <button

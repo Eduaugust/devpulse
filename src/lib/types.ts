@@ -16,6 +16,8 @@ export interface LocalRepo {
   added_at: string;
 }
 
+export type GitProvider = "github" | "gitlab" | "azure" | "bitbucket";
+
 export interface MonitoredRepo {
   id: number | null;
   owner: string;
@@ -23,6 +25,7 @@ export interface MonitoredRepo {
   full_name: string;
   added_at: string;
   base_branch: string;
+  provider: GitProvider;
 }
 
 export interface Setting {
@@ -295,6 +298,51 @@ export interface PrWithReviewStatus {
   headRefName: string;
   author: { login: string };
   commentCount: number;
+}
+
+// Invoice types
+
+export interface InvoiceProfile {
+  id: number | null;
+  profile_type: "sender" | "recipient";
+  name: string;
+  tax_number: string;
+  address_line1: string;
+  address_line2: string;
+  city: string;
+  state: string;
+  country: string;
+  postal_code: string;
+  bank_details_json: string;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface InvoiceLineItem {
+  description: string;
+  quantity: number;
+  rate: number;
+  amount: number;
+}
+
+export interface Invoice {
+  id: number | null;
+  invoice_number: string;
+  sender_profile_id: number;
+  recipient_profile_id: number;
+  invoice_date: string;
+  due_date: string;
+  currency: string;
+  line_items_json: string;
+  subtotal: number;
+  tax_rate: number;
+  tax_amount: number;
+  total: number;
+  notes: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface PrDetail {

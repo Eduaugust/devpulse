@@ -1,16 +1,45 @@
 import { useEffect, useState, useCallback } from "react";
 import { useSettingsStore } from "@/stores/settingsStore";
-import type { MonitoredRepo, LocalRepo } from "@/lib/types";
+import type { MonitoredRepo, LocalRepo, GitProvider } from "@/lib/types";
 import * as commands from "@/lib/tauri";
-import { Command } from "@tauri-apps/plugin-shell";
+import { fetchRepoList, detectUsername } from "@/lib/gitProvider";
 import { basename } from "@tauri-apps/api/path";
 import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { Trash2, Plus, FolderOpen, RefreshCw, Eye, EyeOff, Bell, GripVertical } from "lucide-react";
+import { Trash2, Plus, FolderOpen, RefreshCw, Eye, EyeOff, Bell, GripVertical, Loader2, GitPullRequestArrow } from "lucide-react";
 import { getPlatform } from "@/lib/platform";
 import { ToggleSwitch } from "@/components/ToggleSwitch";
 import { useSidebarOrder } from "@/hooks/useSidebarOrder";
+import { getTimezoneOptions, getSystemTimezone } from "@/lib/timezone";
+
+function providerTag(provider: GitProvider) {
+  const map: Record<GitProvider, { label: string; cls: string }> = {
+    github: { label: "GH", cls: "bg-green-500/10 text-green-500" },
+    gitlab: { label: "GL", cls: "bg-orange-500/10 text-orange-500" },
+    azure: { label: "AZ", cls: "bg-blue-500/10 text-blue-500" },
+    bitbucket: { label: "BB", cls: "bg-sky-500/10 text-sky-500" },
+  };
+  const { label, cls } = map[provider] ?? map.github;
+  return (
+    <span className={`text-[9px] font-medium px-1.5 py-0.5 rounded-full shrink-0 ${cls}`}>
+      {label}
+    </span>
+  );
+}
+
+function highlightMatch(text: string, query: string) {
+  if (!query) return <>{text}</>;
+  const idx = text.toLowerCase().indexOf(query.toLowerCase());
+  if (idx === -1) return <>{text}</>;
+  return (
+    <>
+      {text.slice(0, idx)}
+      <span className="font-semibold">{text.slice(idx, idx + query.length)}</span>
+      {text.slice(idx + query.length)}
+    </>
+  );
+}
 
 const defaultSidebarItems = [
   { route: "/", label: "Dashboard" },
@@ -20,6 +49,7 @@ const defaultSidebarItems = [
   { route: "/commands", label: "Commands" },
   { route: "/connections", label: "Connections" },
   { route: "/reports", label: "Reports" },
+  { route: "/invoices", label: "Invoices" },
 ];
 
 function SidebarSection({
@@ -169,16 +199,8 @@ export function Settings() {
   const detectGitHubUsername = useCallback(async () => {
     setDetectingUser(true);
     try {
-      const cmd = Command.create("gh", [
-        "api",
-        "/user",
-        "--jq",
-        ".login",
-      ]);
-      const out = await cmd.execute();
-      if (out.code === 0 && out.stdout.trim()) {
-        await updateSetting("github_username", out.stdout.trim());
-      }
+      const login = await detectUsername("github");
+      if (login) await updateSetting("github_username", login);
     } catch {
       // gh not authed or not installed
     } finally {
@@ -203,49 +225,22 @@ export function Settings() {
   const [allGhRepos, setAllGhRepos] = useState<string[]>([]);
   const [loadingGhRepos, setLoadingGhRepos] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const [repoProvider, setRepoProvider] = useState<GitProvider>("github");
 
   const fetchAllGhRepos = useCallback(async () => {
     setLoadingGhRepos(true);
     try {
-      const cmd = Command.create("gh", [
-        "repo", "list",
-        "--limit", "200",
-        "--json", "nameWithOwner",
-        "--jq", ".[].nameWithOwner",
-      ]);
-      const out = await cmd.execute();
-      if (out.code === 0 && out.stdout.trim()) {
-        const repos = out.stdout.trim().split("\n").filter(Boolean);
-        // Also fetch org repos
-        const orgCmd = Command.create("gh", [
-          "api", "/user/orgs", "--jq", ".[].login",
-        ]);
-        const orgOut = await orgCmd.execute();
-        if (orgOut.code === 0 && orgOut.stdout.trim()) {
-          const orgs = orgOut.stdout.trim().split("\n").filter(Boolean);
-          for (const org of orgs) {
-            const orgRepoCmd = Command.create("gh", [
-              "repo", "list", org,
-              "--limit", "200",
-              "--json", "nameWithOwner",
-              "--jq", ".[].nameWithOwner",
-            ]);
-            const orgRepoOut = await orgRepoCmd.execute();
-            if (orgRepoOut.code === 0 && orgRepoOut.stdout.trim()) {
-              repos.push(...orgRepoOut.stdout.trim().split("\n").filter(Boolean));
-            }
-          }
-        }
-        setAllGhRepos([...new Set(repos)].sort());
-      }
+      const azOrg = repoProvider === "azure" ? getSetting("azure_org", "") : undefined;
+      const repos = await fetchRepoList(repoProvider, azOrg || undefined);
+      setAllGhRepos(repos);
     } catch {
-      // gh not available
+      // CLI not available
     } finally {
       setLoadingGhRepos(false);
     }
-  }, []);
+  }, [repoProvider, getSetting]);
 
-  // Load gh repos once on mount
+  // Load repos when provider changes or on mount
   useEffect(() => {
     fetchAllGhRepos();
   }, [fetchAllGhRepos]);
@@ -261,8 +256,13 @@ export function Settings() {
 
   const selectSuggestion = async (fullName: string) => {
     const parts = fullName.split("/");
-    if (parts.length === 2) {
-      await commands.addMonitoredRepo(parts[0], parts[1]);
+    if (parts.length >= 2) {
+      // For Azure, store org URL as owner; for others, store the namespace/owner
+      const owner = repoProvider === "azure"
+        ? getSetting("azure_org", "")
+        : parts.slice(0, -1).join("/");
+      const name = parts[parts.length - 1];
+      await commands.addMonitoredRepo(owner, name, repoProvider);
       await loadRepos();
     }
     setNewRepo("");
@@ -271,8 +271,12 @@ export function Settings() {
 
   const addMonitoredRepo = async () => {
     const parts = newRepo.split("/");
-    if (parts.length !== 2) return;
-    await commands.addMonitoredRepo(parts[0], parts[1]);
+    if (parts.length < 2) return;
+    const owner = repoProvider === "azure"
+      ? getSetting("azure_org", "")
+      : parts.slice(0, -1).join("/");
+    const name = parts[parts.length - 1];
+    await commands.addMonitoredRepo(owner, name, repoProvider);
     setNewRepo("");
     setShowSuggestions(false);
     await loadRepos();
@@ -379,6 +383,22 @@ export function Settings() {
 
           <div className="flex items-center justify-between">
             <div>
+              <p className="text-sm">Azure DevOps Organization</p>
+              <p className="text-xs text-muted-foreground">
+                Full org URL (e.g., https://dev.azure.com/myorg)
+              </p>
+            </div>
+            <input
+              type="text"
+              value={getSetting("azure_org", "")}
+              onChange={(e) => updateSetting("azure_org", e.target.value)}
+              placeholder="https://dev.azure.com/..."
+              className="text-sm rounded-md border bg-background px-2 py-1 w-56"
+            />
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div>
               <p className="text-sm">AI Provider</p>
               <p className="text-xs text-muted-foreground">
                 How to run AI generation (Reports)
@@ -391,6 +411,25 @@ export function Settings() {
             >
               <option value="claude-cli">Claude CLI</option>
               <option value="api">Claude API (key required)</option>
+            </select>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm">Timezone</p>
+              <p className="text-xs text-muted-foreground">
+                Used for API calls (Kimai, Calendar)
+              </p>
+            </div>
+            <select
+              value={getSetting("timezone", "")}
+              onChange={(e) => updateSetting("timezone", e.target.value)}
+              className="text-sm rounded-md border bg-background px-2 py-1 max-w-[220px]"
+            >
+              <option value="">Auto ({getSystemTimezone().split("/").pop()?.replace(/_/g, " ")})</option>
+              {getTimezoneOptions().map((tz) => (
+                <option key={tz.value} value={tz.value}>{tz.label}</option>
+              ))}
             </select>
           </div>
         </div>
@@ -593,7 +632,7 @@ export function Settings() {
             onClick={fetchAllGhRepos}
             disabled={loadingGhRepos}
             className="p-1 rounded-md border bg-background hover:bg-secondary transition-colors disabled:opacity-50"
-            title="Refresh repo list from GitHub"
+            title={`Refresh repo list from ${repoProvider === "gitlab" ? "GitLab" : "GitHub"}`}
           >
             <RefreshCw className={`h-3.5 w-3.5 ${loadingGhRepos ? "animate-spin" : ""}`} />
           </button>
@@ -601,19 +640,37 @@ export function Settings() {
         <div className="rounded-lg border bg-card p-4 space-y-3">
           <div className="relative">
             <div className="flex gap-2">
-              <input
-                type="text"
-                placeholder={loadingGhRepos ? "Loading repos..." : "Search repos..."}
-                value={newRepo}
-                onChange={(e) => setNewRepo(e.target.value)}
-                onFocus={() => setShowSuggestions(true)}
-                onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") addMonitoredRepo();
-                  if (e.key === "Escape") setShowSuggestions(false);
+              <select
+                value={repoProvider}
+                onChange={(e) => {
+                  setRepoProvider(e.target.value as GitProvider);
+                  setAllGhRepos([]);
                 }}
-                className="flex-1 text-sm rounded-md border bg-background px-2 py-1"
-              />
+                className="text-xs rounded-md border bg-background px-2 py-1 w-24 shrink-0"
+              >
+                <option value="github">GitHub</option>
+                <option value="gitlab">GitLab</option>
+                <option value="azure">Azure DevOps</option>
+                <option value="bitbucket">Bitbucket</option>
+              </select>
+              <div className="flex-1 relative">
+                <input
+                  type="text"
+                  placeholder={loadingGhRepos ? "Loading repos..." : "Search repos..."}
+                  value={newRepo}
+                  onChange={(e) => setNewRepo(e.target.value)}
+                  onFocus={() => setShowSuggestions(true)}
+                  onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") addMonitoredRepo();
+                    if (e.key === "Escape") setShowSuggestions(false);
+                  }}
+                  className="w-full text-sm rounded-md border bg-background px-2 py-1 pr-7"
+                />
+                {loadingGhRepos && (
+                  <Loader2 className="absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                )}
+              </div>
               <button
                 onClick={addMonitoredRepo}
                 disabled={!newRepo.includes("/")}
@@ -630,27 +687,42 @@ export function Settings() {
                     key={name}
                     onMouseDown={(e) => e.preventDefault()}
                     onClick={() => selectSuggestion(name)}
-                    className="w-full text-left px-3 py-1.5 text-xs font-mono hover:bg-accent transition-colors"
+                    className="w-full text-left px-3 py-1.5 text-xs font-mono hover:bg-accent transition-colors flex items-center gap-2"
                   >
-                    {name}
+                    {providerTag(repoProvider)}
+                    {highlightMatch(name, newRepo)}
                   </button>
                 ))}
               </div>
             )}
           </div>
           {monitoredRepos.length === 0 ? (
-            <p className="text-xs text-muted-foreground text-center py-2">
-              No monitored repositories
-            </p>
+            <div className="flex flex-col items-center py-6 gap-2 text-muted-foreground">
+              <GitPullRequestArrow className="h-8 w-8" />
+              <p className="text-sm font-medium">No monitored repositories</p>
+              <p className="text-xs">Add repos to track PRs, reviews, and notifications</p>
+            </div>
           ) : (
-            <div className="space-y-1">
+            <div className="space-y-2">
               {monitoredRepos.map((repo) => (
                 <div
                   key={repo.id}
-                  className="flex items-center justify-between px-2 py-1 rounded bg-secondary"
+                  className="rounded-lg bg-secondary px-3 py-2 space-y-1.5"
                 >
-                  <span className="text-xs font-mono">{repo.full_name}</span>
-                  <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      {providerTag(repo.provider ?? "github")}
+                      <span className="text-xs font-mono truncate">{repo.full_name}</span>
+                    </div>
+                    <button
+                      onClick={() => repo.id !== null && removeRepo(repo.id)}
+                      className="text-muted-foreground hover:text-destructive transition-colors shrink-0"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-muted-foreground shrink-0">Compare against:</span>
                     <input
                       type="text"
                       value={repo.base_branch}
@@ -664,15 +736,8 @@ export function Settings() {
                           );
                         }
                       }}
-                      className="text-[10px] font-mono w-24 rounded border bg-background px-1.5 py-0.5"
-                      title="Base branch"
+                      className="text-[10px] font-mono w-40 rounded border bg-background px-1.5 py-0.5"
                     />
-                    <button
-                      onClick={() => repo.id !== null && removeRepo(repo.id)}
-                      className="text-muted-foreground hover:text-destructive transition-colors"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </button>
                   </div>
                 </div>
               ))}

@@ -1,5 +1,8 @@
+pub mod azure;
+pub mod bitbucket;
 pub mod db;
 pub mod github;
+pub mod gitlab;
 pub mod kimai;
 pub mod calendar;
 pub mod claude;

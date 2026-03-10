@@ -44,6 +44,8 @@
       "identifier": "shell:allow-execute",
       "allow": [
         { "name": "gh", "cmd": "gh", "args": true },
+        { "name": "glab", "cmd": "glab", "args": true },
+        { "name": "az", "cmd": "az", "args": true },
         { "name": "git", "cmd": "git", "args": true },
         { "name": "claude", "cmd": "claude", "args": true },
         { "name": "code", "cmd": "code", "args": true },

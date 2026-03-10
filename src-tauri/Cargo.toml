@@ -31,3 +31,5 @@ tauri-plugin-os = "2"
 log = "0.4"
 which = "7"
 dirs = "6"
+portable-pty = "0.8"
+uuid = { version = "1", features = ["v4"] }
