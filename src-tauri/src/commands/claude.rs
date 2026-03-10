@@ -143,6 +143,54 @@ pub async fn run_claude_cli(prompt: String) -> Result<String, String> {
     .map_err(|e| format!("Task join error: {}", e))?
 }
 
+/// Check if the `claude` CLI is installed and reachable in the user's PATH.
+/// Runs `claude --version` and returns the version string on success.
+#[tauri::command]
+pub async fn test_claude_cli() -> Result<ClaudeConnectionResult, String> {
+    tokio::task::spawn_blocking(|| {
+        let path = get_shell_path();
+
+        let output = StdCommand::new("claude")
+            .args(["--version"])
+            .env_remove("CLAUDECODE")
+            .env("PATH", &path)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output();
+
+        match output {
+            Ok(out) if out.status.success() => {
+                let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                Ok(ClaudeConnectionResult {
+                    connected: true,
+                    message: if version.is_empty() {
+                        "Claude CLI found".to_string()
+                    } else {
+                        format!("Claude CLI {}", version)
+                    },
+                })
+            }
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                Ok(ClaudeConnectionResult {
+                    connected: false,
+                    message: if stderr.is_empty() {
+                        format!("CLI exited with code {}", out.status.code().unwrap_or(-1))
+                    } else {
+                        stderr
+                    },
+                })
+            }
+            Err(_) => Ok(ClaudeConnectionResult {
+                connected: false,
+                message: "Claude CLI not found in PATH".to_string(),
+            }),
+        }
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
 fn get_shell_path() -> String {
     #[cfg(unix)]
     {
