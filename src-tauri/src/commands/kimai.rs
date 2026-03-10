@@ -86,12 +86,19 @@ pub async fn fetch_kimai_timesheets(
         return Err("URL and API token are required".to_string());
     }
 
+    // Encode begin/end: replace '+' with '%2B' for positive UTC offsets (e.g. +05:30)
+    // Colons and dashes are safe in query values per RFC 3986.
+    let enc_begin = begin.replace('+', "%2B");
+    let enc_end = end.replace('+', "%2B");
+
     let api_url = format!(
         "{}/api/timesheets?begin={}&end={}&order=ASC&size=250&full=true",
         url.trim_end_matches('/'),
-        begin,
-        end
+        enc_begin,
+        enc_end
     );
+
+    log::info!("Kimai fetch URL: {}", api_url);
 
     let response = kimai_http.0
         .get(&api_url)
@@ -107,7 +114,10 @@ pub async fn fetch_kimai_timesheets(
         return Err("Kimai redirected to login — check URL and token in Connections".to_string());
     }
     if !response.status().is_success() {
-        return Err(format!("Kimai API returned HTTP {}", response.status()));
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        log::warn!("Kimai API error ({}): {}", status, body);
+        return Err(format!("Kimai API returned HTTP {} — {}", status, body));
     }
 
     let text = response

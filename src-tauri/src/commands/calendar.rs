@@ -27,6 +27,7 @@ pub struct CalendarConnectionResult {
 pub async fn test_calendar_connection(
     http: tauri::State<'_, HttpClient>,
     credentials_json: String,
+    calendar_id: Option<String>,
 ) -> Result<CalendarConnectionResult, String> {
     if credentials_json.is_empty() {
         return Ok(CalendarConnectionResult {
@@ -47,27 +48,97 @@ pub async fn test_calendar_connection(
 
     let cred_type = creds.get("type").and_then(|v| v.as_str());
 
-    match cred_type {
-        Some("authorized_user") => test_authorized_user(&http.0, &creds).await,
-        Some("service_account") => test_service_account(&http.0, &creds).await,
-        Some(other) => Ok(CalendarConnectionResult {
+    let result = match cred_type {
+        Some("authorized_user") => test_authorized_user(&http.0, &creds).await?,
+        Some("service_account") => test_service_account(&http.0, &creds).await?,
+        Some(other) => CalendarConnectionResult {
             connected: false,
             message: format!("Unknown credential type: '{}'", other),
-        }),
+        },
         None => {
             if creds.get("installed").is_some() || creds.get("web").is_some() {
-                Ok(CalendarConnectionResult {
+                return Ok(CalendarConnectionResult {
                     connected: false,
                     message: "OAuth client config detected — click Authorize to connect your Google account".to_string(),
-                })
+                });
             } else {
-                Ok(CalendarConnectionResult {
+                return Ok(CalendarConnectionResult {
                     connected: false,
                     message: "Missing 'type' field — not a valid Google credentials file".to_string(),
-                })
+                });
+            }
+        }
+    };
+
+    // If connected, try to fetch the next upcoming event to show in the message
+    if result.connected {
+        match refresh_access_token(&http.0, &creds).await {
+            Ok(access_token) => {
+                let cal_id = calendar_id
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "primary".to_string());
+                let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+                let url = format!(
+                    "https://www.googleapis.com/calendar/v3/calendars/{}/events?timeMin={}&singleEvents=true&orderBy=startTime&maxResults=1",
+                    urlencoded(&cal_id),
+                    urlencoded(&now),
+                );
+                match http.0
+                    .get(&url)
+                    .header("Authorization", format!("Bearer {}", access_token))
+                    .send()
+                    .await
+                {
+                    Ok(resp) => {
+                        if resp.status().is_success() {
+                            if let Ok(data) = resp.json::<serde_json::Value>().await {
+                                if let Some(item) = data["items"].as_array().and_then(|a| a.first()) {
+                                    let summary = item["summary"].as_str().unwrap_or("(no title)");
+                                    let raw_start = item["start"]["dateTime"]
+                                        .as_str()
+                                        .or_else(|| item["start"]["date"].as_str())
+                                        .unwrap_or("?");
+                                    let display = if raw_start.contains('T') {
+                                        raw_start.replace('T', " ").chars().take(16).collect::<String>()
+                                    } else {
+                                        raw_start.to_string()
+                                    };
+                                    return Ok(CalendarConnectionResult {
+                                        connected: true,
+                                        message: format!("Next: {} ({})", summary, display),
+                                    });
+                                } else {
+                                    return Ok(CalendarConnectionResult {
+                                        connected: true,
+                                        message: format!("Connected ({}). No upcoming events.", cal_id),
+                                    });
+                                }
+                            }
+                        } else {
+                            let status = resp.status();
+                            let body = resp.text().await.unwrap_or_default();
+                            log::warn!("Calendar next-event fetch failed ({}): {}", status, body);
+                            // Calendar ID might be wrong — still connected but show a hint
+                            if status.as_u16() == 404 {
+                                return Ok(CalendarConnectionResult {
+                                    connected: true,
+                                    message: format!("Connected, but calendar '{}' not found", cal_id),
+                                });
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("Calendar next-event request error: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!("Calendar token refresh for next-event failed: {}", e);
             }
         }
     }
+
+    Ok(result)
 }
 
 #[tauri::command]
@@ -445,6 +516,8 @@ pub async fn fetch_calendar_events(
     credentials_json: String,
     time_min: String,
     time_max: String,
+    calendar_id: Option<String>,
+    timezone: Option<String>,
 ) -> Result<Vec<CalendarEvent>, String> {
     if credentials_json.is_empty() {
         return Err("Calendar credentials not configured".to_string());
@@ -455,12 +528,19 @@ pub async fn fetch_calendar_events(
 
     let access_token = refresh_access_token(&http.0, &creds).await?;
 
-    // Build the API URL — fetch from primary calendar
-    let time_min_rfc = format!("{}T00:00:00Z", time_min);
-    let time_max_rfc = format!("{}T23:59:59Z", time_max);
+    // Build the API URL — use provided calendar ID (email) or fall back to "primary"
+    let cal_id = calendar_id
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "primary".to_string());
+    let tz_suffix = timezone
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Z".to_string());
+    let time_min_rfc = format!("{}T00:00:00{}", time_min, tz_suffix);
+    let time_max_rfc = format!("{}T23:59:59{}", time_max, tz_suffix);
 
     let url = format!(
-        "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin={}&timeMax={}&singleEvents=true&orderBy=startTime&maxResults=50",
+        "https://www.googleapis.com/calendar/v3/calendars/{}/events?timeMin={}&timeMax={}&singleEvents=true&orderBy=startTime&maxResults=50",
+        urlencoded(&cal_id),
         urlencoded(&time_min_rfc),
         urlencoded(&time_max_rfc),
     );

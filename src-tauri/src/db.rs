@@ -31,6 +31,7 @@ pub struct MonitoredRepo {
     pub full_name: String,
     pub added_at: String,
     pub base_branch: String,
+    pub provider: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -82,6 +83,44 @@ pub struct CommandRun {
     pub duration_ms: Option<i64>,
     pub created_at: String,
     pub finished_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct InvoiceProfile {
+    pub id: Option<i64>,
+    pub profile_type: String,
+    pub name: String,
+    pub tax_number: String,
+    pub address_line1: String,
+    pub address_line2: String,
+    pub city: String,
+    pub state: String,
+    pub country: String,
+    pub postal_code: String,
+    pub bank_details_json: String,
+    pub is_default: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Invoice {
+    pub id: Option<i64>,
+    pub invoice_number: String,
+    pub sender_profile_id: i64,
+    pub recipient_profile_id: i64,
+    pub invoice_date: String,
+    pub due_date: String,
+    pub currency: String,
+    pub line_items_json: String,
+    pub subtotal: f64,
+    pub tax_rate: f64,
+    pub tax_amount: f64,
+    pub total: f64,
+    pub notes: String,
+    pub status: String,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 pub struct Database {
@@ -185,12 +224,57 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_commands_slug ON commands(slug);
             CREATE INDEX IF NOT EXISTS idx_command_runs_command ON command_runs(command_id);
             CREATE INDEX IF NOT EXISTS idx_command_runs_created ON command_runs(created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS invoice_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_type TEXT NOT NULL,
+                name TEXT NOT NULL,
+                tax_number TEXT NOT NULL DEFAULT '',
+                address_line1 TEXT NOT NULL DEFAULT '',
+                address_line2 TEXT NOT NULL DEFAULT '',
+                city TEXT NOT NULL DEFAULT '',
+                state TEXT NOT NULL DEFAULT '',
+                country TEXT NOT NULL DEFAULT '',
+                postal_code TEXT NOT NULL DEFAULT '',
+                bank_details_json TEXT NOT NULL DEFAULT '{}',
+                is_default INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS invoices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                invoice_number TEXT NOT NULL UNIQUE,
+                sender_profile_id INTEGER NOT NULL REFERENCES invoice_profiles(id),
+                recipient_profile_id INTEGER NOT NULL REFERENCES invoice_profiles(id),
+                invoice_date TEXT NOT NULL,
+                due_date TEXT NOT NULL,
+                currency TEXT NOT NULL DEFAULT 'USD',
+                line_items_json TEXT NOT NULL DEFAULT '[]',
+                subtotal REAL NOT NULL DEFAULT 0,
+                tax_rate REAL NOT NULL DEFAULT 0,
+                tax_amount REAL NOT NULL DEFAULT 0,
+                total REAL NOT NULL DEFAULT 0,
+                notes TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'draft',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_invoices_number ON invoices(invoice_number);
+            CREATE INDEX IF NOT EXISTS idx_invoices_created ON invoices(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_invoice_profiles_type ON invoice_profiles(profile_type);
             ",
         )?;
 
         // Migration: add base_branch column to monitored_repos
         let _ = conn.execute_batch(
             "ALTER TABLE monitored_repos ADD COLUMN base_branch TEXT NOT NULL DEFAULT 'development';"
+        );
+
+        // Migration: add provider column to monitored_repos
+        let _ = conn.execute_batch(
+            "ALTER TABLE monitored_repos ADD COLUMN provider TEXT NOT NULL DEFAULT 'github';"
         );
 
         // Insert default settings if they don't exist
@@ -207,6 +291,7 @@ impl Database {
             INSERT OR IGNORE INTO settings (key, value) VALUES ('auto_review_post', 'false');
             INSERT OR IGNORE INTO settings (key, value) VALUES ('auto_description_enabled', 'false');
             INSERT OR IGNORE INTO settings (key, value) VALUES ('auto_fixes_enabled', 'false');
+            INSERT OR IGNORE INTO settings (key, value) VALUES ('timezone', '');
             ",
         )?;
 
@@ -361,7 +446,7 @@ impl Database {
     pub fn get_monitored_repos(&self) -> Result<Vec<MonitoredRepo>, Box<dyn std::error::Error>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt =
-            conn.prepare("SELECT id, owner, name, full_name, added_at, base_branch FROM monitored_repos ORDER BY full_name")?;
+            conn.prepare("SELECT id, owner, name, full_name, added_at, base_branch, provider FROM monitored_repos ORDER BY full_name")?;
         let repos = stmt
             .query_map([], |row| {
                 Ok(MonitoredRepo {
@@ -371,6 +456,7 @@ impl Database {
                     full_name: row.get(3)?,
                     added_at: row.get(4)?,
                     base_branch: row.get(5)?,
+                    provider: row.get(6)?,
                 })
             })?
             .filter_map(|r| r.ok())
@@ -378,13 +464,13 @@ impl Database {
         Ok(repos)
     }
 
-    pub fn add_monitored_repo(&self, owner: &str, name: &str) -> Result<i64, Box<dyn std::error::Error>> {
+    pub fn add_monitored_repo(&self, owner: &str, name: &str, provider: &str) -> Result<i64, Box<dyn std::error::Error>> {
         let conn = self.conn.lock().unwrap();
         let full_name = format!("{}/{}", owner, name);
         let now = chrono::Utc::now().to_rfc3339();
         conn.execute(
-            "INSERT OR IGNORE INTO monitored_repos (owner, name, full_name, added_at, base_branch) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![owner, name, full_name, now, "development"],
+            "INSERT OR IGNORE INTO monitored_repos (owner, name, full_name, added_at, base_branch, provider) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![owner, name, full_name, now, "development", provider],
         )?;
         Ok(conn.last_insert_rowid())
     }
@@ -950,6 +1036,206 @@ Rules:
     pub fn delete_command_run(&self, id: i64) -> Result<(), Box<dyn std::error::Error>> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM command_runs WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    // ── Invoice Profiles CRUD ──
+
+    pub fn get_invoice_profiles(&self, profile_type: Option<&str>) -> Result<Vec<InvoiceProfile>, Box<dyn std::error::Error>> {
+        let conn = self.conn.lock().unwrap();
+        let (sql, param_values): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(pt) = profile_type {
+            (
+                "SELECT id, profile_type, name, tax_number, address_line1, address_line2, city, state, country, postal_code, bank_details_json, is_default, created_at, updated_at
+                 FROM invoice_profiles WHERE profile_type = ? ORDER BY is_default DESC, name".to_string(),
+                vec![Box::new(pt.to_string())],
+            )
+        } else {
+            (
+                "SELECT id, profile_type, name, tax_number, address_line1, address_line2, city, state, country, postal_code, bank_details_json, is_default, created_at, updated_at
+                 FROM invoice_profiles ORDER BY profile_type, is_default DESC, name".to_string(),
+                vec![],
+            )
+        };
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = conn.prepare(&sql)?;
+        let profiles = stmt
+            .query_map(params_refs.as_slice(), |row| {
+                Ok(InvoiceProfile {
+                    id: Some(row.get(0)?),
+                    profile_type: row.get(1)?,
+                    name: row.get(2)?,
+                    tax_number: row.get(3)?,
+                    address_line1: row.get(4)?,
+                    address_line2: row.get(5)?,
+                    city: row.get(6)?,
+                    state: row.get(7)?,
+                    country: row.get(8)?,
+                    postal_code: row.get(9)?,
+                    bank_details_json: row.get(10)?,
+                    is_default: row.get(11)?,
+                    created_at: row.get(12)?,
+                    updated_at: row.get(13)?,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(profiles)
+    }
+
+    pub fn insert_invoice_profile(&self, profile: &InvoiceProfile) -> Result<i64, Box<dyn std::error::Error>> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        // If setting as default, clear other defaults of same type
+        if profile.is_default {
+            conn.execute(
+                "UPDATE invoice_profiles SET is_default = 0 WHERE profile_type = ?1",
+                params![profile.profile_type],
+            )?;
+        }
+        conn.execute(
+            "INSERT INTO invoice_profiles (profile_type, name, tax_number, address_line1, address_line2, city, state, country, postal_code, bank_details_json, is_default, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                profile.profile_type, profile.name, profile.tax_number,
+                profile.address_line1, profile.address_line2, profile.city,
+                profile.state, profile.country, profile.postal_code,
+                profile.bank_details_json, profile.is_default, now, now,
+            ],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn update_invoice_profile(&self, profile: &InvoiceProfile) -> Result<(), Box<dyn std::error::Error>> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        if profile.is_default {
+            conn.execute(
+                "UPDATE invoice_profiles SET is_default = 0 WHERE profile_type = ?1 AND id != ?2",
+                params![profile.profile_type, profile.id],
+            )?;
+        }
+        conn.execute(
+            "UPDATE invoice_profiles SET name=?1, tax_number=?2, address_line1=?3, address_line2=?4, city=?5, state=?6, country=?7, postal_code=?8, bank_details_json=?9, is_default=?10, updated_at=?11 WHERE id=?12",
+            params![
+                profile.name, profile.tax_number, profile.address_line1,
+                profile.address_line2, profile.city, profile.state,
+                profile.country, profile.postal_code, profile.bank_details_json,
+                profile.is_default, now, profile.id,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_invoice_profile(&self, id: i64) -> Result<(), Box<dyn std::error::Error>> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM invoice_profiles WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    // ── Invoices CRUD ──
+
+    pub fn get_invoices(&self, limit: i64) -> Result<Vec<Invoice>, Box<dyn std::error::Error>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, invoice_number, sender_profile_id, recipient_profile_id, invoice_date, due_date, currency, line_items_json, subtotal, tax_rate, tax_amount, total, notes, status, created_at, updated_at
+             FROM invoices ORDER BY created_at DESC LIMIT ?1"
+        )?;
+        let invoices = stmt
+            .query_map(params![limit], |row| {
+                Ok(Invoice {
+                    id: Some(row.get(0)?),
+                    invoice_number: row.get(1)?,
+                    sender_profile_id: row.get(2)?,
+                    recipient_profile_id: row.get(3)?,
+                    invoice_date: row.get(4)?,
+                    due_date: row.get(5)?,
+                    currency: row.get(6)?,
+                    line_items_json: row.get(7)?,
+                    subtotal: row.get(8)?,
+                    tax_rate: row.get(9)?,
+                    tax_amount: row.get(10)?,
+                    total: row.get(11)?,
+                    notes: row.get(12)?,
+                    status: row.get(13)?,
+                    created_at: row.get(14)?,
+                    updated_at: row.get(15)?,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(invoices)
+    }
+
+    pub fn get_invoice(&self, id: i64) -> Result<Option<Invoice>, Box<dyn std::error::Error>> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            "SELECT id, invoice_number, sender_profile_id, recipient_profile_id, invoice_date, due_date, currency, line_items_json, subtotal, tax_rate, tax_amount, total, notes, status, created_at, updated_at
+             FROM invoices WHERE id = ?1",
+            params![id],
+            |row| {
+                Ok(Invoice {
+                    id: Some(row.get(0)?),
+                    invoice_number: row.get(1)?,
+                    sender_profile_id: row.get(2)?,
+                    recipient_profile_id: row.get(3)?,
+                    invoice_date: row.get(4)?,
+                    due_date: row.get(5)?,
+                    currency: row.get(6)?,
+                    line_items_json: row.get(7)?,
+                    subtotal: row.get(8)?,
+                    tax_rate: row.get(9)?,
+                    tax_amount: row.get(10)?,
+                    total: row.get(11)?,
+                    notes: row.get(12)?,
+                    status: row.get(13)?,
+                    created_at: row.get(14)?,
+                    updated_at: row.get(15)?,
+                })
+            },
+        );
+        match result {
+            Ok(inv) => Ok(Some(inv)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(Box::new(e)),
+        }
+    }
+
+    pub fn insert_invoice(&self, invoice: &Invoice) -> Result<i64, Box<dyn std::error::Error>> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO invoices (invoice_number, sender_profile_id, recipient_profile_id, invoice_date, due_date, currency, line_items_json, subtotal, tax_rate, tax_amount, total, notes, status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            params![
+                invoice.invoice_number, invoice.sender_profile_id, invoice.recipient_profile_id,
+                invoice.invoice_date, invoice.due_date, invoice.currency,
+                invoice.line_items_json, invoice.subtotal, invoice.tax_rate,
+                invoice.tax_amount, invoice.total, invoice.notes,
+                invoice.status, now, now,
+            ],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn update_invoice(&self, invoice: &Invoice) -> Result<(), Box<dyn std::error::Error>> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE invoices SET invoice_number=?1, sender_profile_id=?2, recipient_profile_id=?3, invoice_date=?4, due_date=?5, currency=?6, line_items_json=?7, subtotal=?8, tax_rate=?9, tax_amount=?10, total=?11, notes=?12, status=?13, updated_at=?14 WHERE id=?15",
+            params![
+                invoice.invoice_number, invoice.sender_profile_id, invoice.recipient_profile_id,
+                invoice.invoice_date, invoice.due_date, invoice.currency,
+                invoice.line_items_json, invoice.subtotal, invoice.tax_rate,
+                invoice.tax_amount, invoice.total, invoice.notes,
+                invoice.status, now, invoice.id,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_invoice(&self, id: i64) -> Result<(), Box<dyn std::error::Error>> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM invoices WHERE id = ?1", params![id])?;
         Ok(())
     }
 
