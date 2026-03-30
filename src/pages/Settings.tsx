@@ -1,13 +1,14 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useSettingsStore } from "@/stores/settingsStore";
-import type { MonitoredRepo, LocalRepo, GitProvider } from "@/lib/types";
+import type { MonitoredRepo, LocalRepo, GitProvider, AutofillRun } from "@/lib/types";
 import * as commands from "@/lib/tauri";
 import { fetchRepoList, detectUsername } from "@/lib/gitProvider";
 import { basename } from "@tauri-apps/api/path";
 import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { Trash2, Plus, FolderOpen, RefreshCw, Eye, EyeOff, Bell, GripVertical, Loader2, GitPullRequestArrow } from "lucide-react";
+import { Trash2, Plus, FolderOpen, RefreshCw, Eye, EyeOff, Bell, GripVertical, Loader2, GitPullRequestArrow, Play, Clock, ChevronRight } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { getPlatform } from "@/lib/platform";
 import { ToggleSwitch } from "@/components/ToggleSwitch";
 import { useSidebarOrder } from "@/hooks/useSidebarOrder";
@@ -42,15 +43,18 @@ function highlightMatch(text: string, query: string) {
 }
 
 const defaultSidebarItems = [
-  { route: "/", label: "Dashboard" },
+  { route: "/reports", label: "Reports" },
+  { route: "/invoices", label: "Invoices" },
+  { route: "/connections", label: "Connections" },
+  { route: "/dashboard", label: "Dashboard" },
   { route: "/history", label: "History" },
   { route: "/claude-code", label: "Claude Code" },
   { route: "/pr-review", label: "PR Review" },
   { route: "/commands", label: "Commands" },
-  { route: "/connections", label: "Connections" },
-  { route: "/reports", label: "Reports" },
-  { route: "/invoices", label: "Invoices" },
+  { route: "/git-activity", label: "Git Activity" },
 ];
+
+const betaRoutes = new Set(["/dashboard", "/history", "/claude-code", "/pr-review", "/commands", "/git-activity"]);
 
 function SidebarSection({
   getSetting,
@@ -60,13 +64,51 @@ function SidebarSection({
   updateSetting: (key: string, value: string) => void;
 }) {
   const { orderItems } = useSidebarOrder();
-  const items = orderItems(defaultSidebarItems, (i) => i.route);
+  const betaEnabled = Array.from(betaRoutes).some(
+    (route) => getSetting(`sidebar_visible_${route}`, "true") === "true",
+  );
+  const filteredItems = betaEnabled
+    ? defaultSidebarItems
+    : defaultSidebarItems.filter((i) => !betaRoutes.has(i.route));
+  const items = orderItems(filteredItems, (i) => i.route);
 
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [overIdx, setOverIdx] = useState<number | null>(null);
+  const rowRefs = useRef<(HTMLDivElement | null)[]>([]);
 
   const saveOrder = (newItems: typeof items) => {
     updateSetting("sidebar_order", JSON.stringify(newItems.map((i) => i.route)));
+  };
+
+  const handlePointerDown = (e: React.PointerEvent, idx: number) => {
+    e.preventDefault();
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    setDragIdx(idx);
+    setOverIdx(idx);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+    if (dragIdx === null) return;
+    for (let i = 0; i < rowRefs.current.length; i++) {
+      const el = rowRefs.current[i];
+      if (!el) continue;
+      const rect = el.getBoundingClientRect();
+      if (e.clientY >= rect.top && e.clientY < rect.bottom) {
+        setOverIdx(i);
+        return;
+      }
+    }
+  };
+
+  const handlePointerUp = () => {
+    if (dragIdx !== null && overIdx !== null && dragIdx !== overIdx) {
+      const newItems = [...items];
+      const [moved] = newItems.splice(dragIdx, 1);
+      newItems.splice(overIdx, 0, moved);
+      saveOrder(newItems);
+    }
+    setDragIdx(null);
+    setOverIdx(null);
   };
 
   return (
@@ -77,31 +119,22 @@ function SidebarSection({
           const settingKey = `sidebar_visible_${route}`;
           const visible = getSetting(settingKey, "true") === "true";
           const isDragging = dragIdx === idx;
-          const isOver = overIdx === idx;
+          const isOver = overIdx === idx && dragIdx !== null && dragIdx !== idx;
           return (
             <div
               key={route}
-              draggable
-              onDragStart={() => setDragIdx(idx)}
-              onDragOver={(e) => { e.preventDefault(); setOverIdx(idx); }}
-              onDragEnd={() => { setDragIdx(null); setOverIdx(null); }}
-              onDrop={(e) => {
-                e.preventDefault();
-                if (dragIdx !== null && dragIdx !== idx) {
-                  const newItems = [...items];
-                  const [moved] = newItems.splice(dragIdx, 1);
-                  newItems.splice(idx, 0, moved);
-                  saveOrder(newItems);
-                }
-                setDragIdx(null);
-                setOverIdx(null);
-              }}
-              className={`flex items-center justify-between py-1.5 px-2 rounded-md transition-colors ${
+              ref={(el) => { rowRefs.current[idx] = el; }}
+              onPointerMove={handlePointerMove}
+              onPointerUp={handlePointerUp}
+              className={`flex items-center justify-between py-1.5 px-2 rounded-md transition-colors select-none ${
                 isDragging ? "opacity-40" : ""
-              } ${isOver && !isDragging ? "bg-accent/50" : ""}`}
+              } ${isOver ? "bg-accent/50" : ""}`}
             >
               <div className="flex items-center gap-2">
-                <GripVertical className="h-3.5 w-3.5 text-muted-foreground cursor-grab" />
+                <GripVertical
+                  className="h-3.5 w-3.5 text-muted-foreground cursor-grab active:cursor-grabbing"
+                  onPointerDown={(e) => handlePointerDown(e, idx)}
+                />
                 <p className="text-sm">{label}</p>
               </div>
               <button
@@ -123,6 +156,7 @@ function SidebarSection({
   );
 }
 
+
 export function Settings() {
   const { settings, fetchSettings, updateSetting, getSetting } =
     useSettingsStore();
@@ -133,6 +167,11 @@ export function Settings() {
   const [detectingUser, setDetectingUser] = useState(false);
   const [notifPermission, setNotifPermission] = useState<"granted" | "denied" | "unknown">("unknown");
   const [notifTestResult, setNotifTestResult] = useState<string | undefined>();
+
+  // Auto-fill state
+  const [autofillRuns, setAutofillRuns] = useState<AutofillRun[]>([]);
+  const [autofillRunning, setAutofillRunning] = useState(false);
+  const [expandedRunId, setExpandedRunId] = useState<number | null>(null);
 
   const checkNotifPermission = useCallback(async () => {
     try {
@@ -208,12 +247,40 @@ export function Settings() {
     }
   }, [updateSetting]);
 
+  const loadAutofillRuns = useCallback(async () => {
+    try {
+      const runs = await commands.getAutofillRuns(5);
+      setAutofillRuns(runs);
+    } catch { /* ignore */ }
+  }, []);
+
+  const getLastWorkday = () => {
+    const now = new Date();
+    const day = now.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+    const daysBack = day === 1 ? 3 : day === 0 ? 2 : 1; // Mon→Fri, Sun→Fri, else→yesterday
+    return new Date(Date.now() - daysBack * 86400000).toISOString().slice(0, 10);
+  };
+
+  const handleRunAutofill = useCallback(async () => {
+    setAutofillRunning(true);
+    try {
+      const target = getLastWorkday();
+      await commands.runAutofill(target);
+      await loadAutofillRuns();
+    } catch (e) {
+      console.error("Auto-fill failed:", e);
+    } finally {
+      setAutofillRunning(false);
+    }
+  }, [loadAutofillRuns]);
+
   useEffect(() => {
     fetchSettings();
     loadRepos();
     loadLocalRepos();
     checkNotifPermission();
-  }, [fetchSettings, loadRepos, loadLocalRepos, checkNotifPermission]);
+    loadAutofillRuns();
+  }, [fetchSettings, loadRepos, loadLocalRepos, checkNotifPermission, loadAutofillRuns]);
 
   // Auto-detect GitHub username if empty on first load
   useEffect(() => {
@@ -432,10 +499,35 @@ export function Settings() {
               ))}
             </select>
           </div>
+
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm">Beta Features</p>
+              <p className="text-xs text-muted-foreground">
+                Show Dashboard, History, Claude Code, PR Review, and Commands
+              </p>
+            </div>
+            <ToggleSwitch
+              enabled={Array.from(betaRoutes).some(
+                (route) => getSetting(`sidebar_visible_${route}`, "true") === "true",
+              )}
+              onToggle={() => {
+                const anyVisible = Array.from(betaRoutes).some(
+                  (route) => getSetting(`sidebar_visible_${route}`, "true") === "true",
+                );
+                const newVal = anyVisible ? "false" : "true";
+                for (const route of betaRoutes) {
+                  updateSetting(`sidebar_visible_${route}`, newVal);
+                }
+              }}
+            />
+          </div>
         </div>
       </section>
 
-      <section className="space-y-3">
+      {Array.from(betaRoutes).some(
+        (route) => getSetting(`sidebar_visible_${route}`, "true") === "true",
+      ) && <section className="space-y-3">
         <h3 className="text-sm font-medium">Notifications</h3>
         <div className="space-y-3 rounded-lg border bg-card p-4">
           <div className="flex items-center justify-between">
@@ -520,9 +612,11 @@ export function Settings() {
             </div>
           ))}
         </div>
-      </section>
+      </section>}
 
-      <section className="space-y-3">
+      {Array.from(betaRoutes).some(
+        (route) => getSetting(`sidebar_visible_${route}`, "true") === "true",
+      ) && <section className="space-y-3">
         <h3 className="text-sm font-medium">Automation</h3>
         <div className="space-y-3 rounded-lg border bg-card p-4">
           <div className="flex items-center justify-between">
@@ -577,6 +671,173 @@ export function Settings() {
               onToggle={() => updateSetting("auto_fixes_enabled", getSetting("auto_fixes_enabled", "false") === "true" ? "false" : "true")}
             />
           </div>
+
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm">Include Review Comments</p>
+              <p className="text-xs text-muted-foreground">
+                Also trigger auto-fix on review comments (e.g. Copilot), not just changes requested
+              </p>
+            </div>
+            <ToggleSwitch
+              enabled={getSetting("auto_fixes_comments", "false") === "true"}
+              onToggle={() => updateSetting("auto_fixes_comments", getSetting("auto_fixes_comments", "false") === "true" ? "false" : "true")}
+              disabled={getSetting("auto_fixes_enabled", "false") !== "true"}
+            />
+          </div>
+        </div>
+      </section>}
+
+      {/* Auto-Fill Timesheet */}
+      <section className="space-y-3">
+        <h3 className="text-sm font-medium">Auto-Fill Timesheet</h3>
+        <div className="space-y-3 rounded-lg border bg-card p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm">Enable Auto-Fill</p>
+              <p className="text-xs text-muted-foreground">
+                Automatically fill Kimai timesheet for the previous day
+              </p>
+            </div>
+            <ToggleSwitch
+              enabled={settings.autofill_enabled === "true"}
+              onToggle={() => updateSetting("autofill_enabled", settings.autofill_enabled === "true" ? "false" : "true")}
+            />
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm">Schedule Time</p>
+              <p className="text-xs text-muted-foreground">
+                Time of day to run auto-fill
+              </p>
+            </div>
+            <input
+              type="time"
+              value={settings.autofill_time || "09:00"}
+              onChange={(e) => updateSetting("autofill_time", e.target.value)}
+              disabled={settings.autofill_enabled !== "true"}
+              className="text-sm rounded-md border bg-background px-2 py-1 disabled:opacity-50"
+            />
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm">Context Days</p>
+              <p className="text-xs text-muted-foreground">
+                Days of Kimai history for context
+              </p>
+            </div>
+            <input
+              type="number"
+              min={1}
+              max={60}
+              value={settings.autofill_context_days || "14"}
+              onChange={(e) => updateSetting("autofill_context_days", e.target.value)}
+              disabled={settings.autofill_enabled !== "true"}
+              className="w-16 text-sm rounded-md border bg-background px-2 py-1 disabled:opacity-50"
+            />
+          </div>
+
+          <div className="flex items-center gap-2 pt-1">
+            <button
+              onClick={handleRunAutofill}
+              disabled={autofillRunning}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
+            >
+              {autofillRunning ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Play className="h-3.5 w-3.5" />
+              )}
+              {autofillRunning ? "Running..." : `Run Now (${getLastWorkday()})`}
+            </button>
+          </div>
+
+          {autofillRuns.length > 0 && (
+            <div className="pt-2 border-t border-border space-y-1">
+              <p className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                <Clock className="h-3 w-3" /> Recent Runs
+              </p>
+              {autofillRuns.map((run) => (
+                <div key={run.id}>
+                  <button
+                    onClick={() => setExpandedRunId(expandedRunId === run.id ? null : run.id)}
+                    className="flex w-full items-center justify-between text-xs py-1 hover:bg-accent/50 rounded px-1 -mx-1"
+                  >
+                    <span className="flex items-center gap-1">
+                      <ChevronRight className={cn("h-3 w-3 transition-transform", expandedRunId === run.id && "rotate-90")} />
+                      {run.target_date}
+                    </span>
+                    <span className={
+                      run.status === "completed" ? "text-green-500" :
+                      run.status === "error" ? "text-red-500" :
+                      "text-yellow-500"
+                    }>
+                      {run.status} {run.entries_created > 0 && `(${run.entries_created} entries)`}
+                    </span>
+                  </button>
+                  {expandedRunId === run.id && (
+                    <div className="ml-4 mt-1 mb-2">
+                      {run.result_text ? (
+                        <pre className="text-xs text-muted-foreground whitespace-pre-wrap bg-accent/20 rounded p-2 max-h-48 overflow-y-auto">
+                          {run.result_text}
+                        </pre>
+                      ) : run.error_text ? (
+                        <pre className="text-xs text-red-400 whitespace-pre-wrap bg-accent/20 rounded p-2 max-h-48 overflow-y-auto">
+                          {run.error_text}
+                        </pre>
+                      ) : (
+                        <p className="text-xs text-muted-foreground italic">No details available.</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <h3 className="text-sm font-medium">Connections</h3>
+        <div className="rounded-lg border bg-card p-4 space-y-0.5">
+          {[
+            { key: "github", label: "GitHub CLI" },
+            { key: "gitlab", label: "GitLab CLI" },
+            { key: "azure", label: "Azure DevOps" },
+            { key: "bitbucket", label: "Bitbucket" },
+            { key: "kimai", label: "Kimai" },
+            { key: "calendar", label: "Google Calendar" },
+            { key: "claude_cli", label: "Claude CLI" },
+            // Beta-only connections
+            ...( Array.from(betaRoutes).some(r => getSetting(`sidebar_visible_${r}`, "true") === "true")
+              ? [{ key: "claude", label: "Claude API" }]
+              : []
+            ),
+          ].map(({ key, label }) => {
+            const settingKey = `connection_visible_${key}`;
+            const visible = getSetting(settingKey, "true") === "true";
+            return (
+              <div
+                key={key}
+                className="flex items-center justify-between py-1.5 px-2 rounded-md"
+              >
+                <p className="text-sm">{label}</p>
+                <button
+                  onClick={() => updateSetting(settingKey, visible ? "false" : "true")}
+                  className="p-1 rounded-md hover:bg-secondary transition-colors"
+                  title={visible ? "Hide from Connections" : "Show in Connections"}
+                >
+                  {visible ? (
+                    <Eye className="h-4 w-4 text-foreground" />
+                  ) : (
+                    <EyeOff className="h-4 w-4 text-muted-foreground" />
+                  )}
+                </button>
+              </div>
+            );
+          })}
         </div>
       </section>
 

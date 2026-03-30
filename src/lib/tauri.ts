@@ -18,6 +18,12 @@ import type {
   CommandRun,
   InvoiceProfile,
   Invoice,
+  KimaiMcpSetupResult,
+  ActivityMapping,
+  AutofillRun,
+  AutofillResult,
+  GatherResult,
+  GitLogEntry,
 } from "./types";
 
 // DB commands
@@ -133,6 +139,9 @@ export const fetchKimaiTimesheets = (url: string, apiToken: string, begin: strin
 
 export const ensureKimaiMcp = (kimaiUrl: string, kimaiToken: string) =>
   invoke<void>("ensure_kimai_mcp", { kimaiUrl, kimaiToken });
+
+export const setupKimaiMcp = (kimaiUrl: string, kimaiToken: string) =>
+  invoke<KimaiMcpSetupResult>("setup_kimai_mcp", { kimaiUrl, kimaiToken });
 
 export const testCalendarConnection = (credentialsJson: string, calendarId?: string) =>
   invoke<CalendarConnectionResult>("test_calendar_connection", {
@@ -291,4 +300,44 @@ export const saveInvoice = (invoice: Invoice) =>
 
 export const deleteInvoice = (id: number) =>
   invoke<void>("delete_invoice", { id });
+
+// Activity Mapping commands
+export const getActivityMappings = () =>
+  invoke<ActivityMapping[]>("get_activity_mappings");
+
+export const saveActivityMapping = (mapping: ActivityMapping) =>
+  invoke<number>("save_activity_mapping", { mapping });
+
+export const deleteActivityMapping = (id: number) =>
+  invoke<void>("delete_activity_mapping", { id });
+
+// Autofill commands
+export const getAutofillRuns = (limit?: number) =>
+  invoke<AutofillRun[]>("get_autofill_runs", { limit: limit ?? 10 });
+
+export const runAutofill = (targetDate: string) =>
+  invoke<AutofillResult>("run_autofill", { targetDate });
+
+// Data gathering commands
+export const gatherReportData = (opts: {
+  dateFrom: string;
+  dateTo: string;
+  includeGit?: boolean;
+  includeGithub?: boolean;
+  includeKimai?: boolean;
+  includeCalendar?: boolean;
+  kimaiContextDays?: number;
+}) =>
+  invoke<GatherResult>("gather_report_data", {
+    dateFrom: opts.dateFrom,
+    dateTo: opts.dateTo,
+    includeGit: opts.includeGit ?? true,
+    includeGithub: opts.includeGithub ?? true,
+    includeKimai: opts.includeKimai ?? true,
+    includeCalendar: opts.includeCalendar ?? true,
+    kimaiContextDays: opts.kimaiContextDays ?? 14,
+  });
+
+export const fetchGitLog = (afterDate: string, beforeDate: string) =>
+  invoke<GitLogEntry[]>("fetch_git_log", { afterDate, beforeDate });
 

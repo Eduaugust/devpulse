@@ -22,6 +22,7 @@ const typeIcons: Record<BackgroundTask["type"], typeof GitPullRequestArrow> = {
   "report-generation": FileText,
   "pr-description": FilePen,
   "pr-fixes": GitPullRequestArrow,
+  "fill-timesheet": FileText,
 };
 
 const typeRoutes: Record<BackgroundTask["type"], string> = {
@@ -30,6 +31,7 @@ const typeRoutes: Record<BackgroundTask["type"], string> = {
   "report-generation": "/reports",
   "pr-description": "/history",
   "pr-fixes": "/pr-review",
+  "fill-timesheet": "/reports",
 };
 
 const statusIcons: Record<BackgroundTask["status"], typeof Loader2> = {

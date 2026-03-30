@@ -6,6 +6,7 @@ mod terminal;
 mod tray;
 
 use db::Database;
+use std::time::Duration;
 use tauri::Manager;
 
 /// Shared HTTP client for general API calls (Claude, Calendar, etc.)
@@ -19,7 +20,6 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_sql::Builder::new().build())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
@@ -38,11 +38,19 @@ pub fn run() {
             let database =
                 Database::new(app_dir).expect("Failed to initialize database");
             app.manage(database);
-            app.manage(HttpClient(reqwest::Client::new()));
+            app.manage(HttpClient(
+                reqwest::Client::builder()
+                    .connect_timeout(Duration::from_secs(10))
+                    .timeout(Duration::from_secs(30))
+                    .build()
+                    .expect("Failed to build HTTP client"),
+            ));
             app.manage(pty::PtyState::default());
             app.manage(KimaiHttpClient(
                 reqwest::Client::builder()
                     .redirect(reqwest::redirect::Policy::none())
+                    .connect_timeout(Duration::from_secs(10))
+                    .timeout(Duration::from_secs(30))
                     .build()
                     .expect("Failed to build Kimai HTTP client"),
             ));
@@ -118,6 +126,16 @@ pub fn run() {
             commands::db::update_command_run,
             commands::db::delete_command_run,
             commands::db::get_command_runs,
+            // Activity Mapping commands
+            commands::db::get_activity_mappings,
+            commands::db::save_activity_mapping,
+            commands::db::delete_activity_mapping,
+            // Autofill commands
+            commands::db::get_autofill_runs,
+            commands::autofill::run_autofill,
+            // Data gathering commands
+            commands::gather::gather_report_data,
+            commands::git::fetch_git_log,
             // Invoice commands
             commands::db::get_invoice_profiles,
             commands::db::save_invoice_profile,
@@ -156,6 +174,7 @@ pub fn run() {
             commands::kimai::test_kimai_connection,
             commands::kimai::fetch_kimai_timesheets,
             commands::kimai::ensure_kimai_mcp,
+            commands::kimai::setup_kimai_mcp,
             commands::calendar::test_calendar_connection,
             commands::calendar::authorize_calendar,
             commands::calendar::cancel_calendar_auth,

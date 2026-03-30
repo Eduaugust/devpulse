@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useInvoiceStore } from "@/stores/invoiceStore";
 import { InvoiceProfileEditor } from "@/components/InvoiceProfileEditor";
 import { getCredential } from "@/lib/credentials";
-import { fetchKimaiTimesheets } from "@/lib/tauri";
+import { fetchKimaiTimesheets, getSettings, updateSetting } from "@/lib/tauri";
 import {
   Plus,
   Trash2,
@@ -54,10 +54,15 @@ export function Invoices() {
   const [saving, setSaving] = useState(false);
   const [showSenderDropdown, setShowSenderDropdown] = useState(false);
   const [showRecipientDropdown, setShowRecipientDropdown] = useState(false);
+  const [defaultRate, setDefaultRate] = useState<number | null>(null);
 
   useEffect(() => {
     store.fetchProfiles();
     store.fetchInvoices();
+    getSettings().then((settings) => {
+      const saved = settings.find((s) => s.key === "invoice_default_rate");
+      if (saved && saved.value) setDefaultRate(parseFloat(saved.value));
+    }).catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -90,13 +95,14 @@ export function Invoices() {
       const totalSeconds = timesheets.reduce((sum, ts) => sum + (ts.duration ?? 0), 0);
       const totalHours = Math.round((totalSeconds / 3600) * 100) / 100;
 
+      const rate = defaultRate ?? 0;
       store.setField("lineItems", [
         ...store.lineItems.filter((i) => i.description),
         {
           description: `Software development services performed in Brazil — ${mo.label}`,
           quantity: totalHours,
-          rate: 17.5,
-          amount: Math.round(totalHours * 17.5 * 100) / 100,
+          rate,
+          amount: rate ? Math.round(totalHours * rate * 100) / 100 : 0,
         },
       ]);
     } catch (e) {
@@ -340,9 +346,17 @@ export function Invoices() {
                   <input
                     type="number"
                     step="0.01"
+                    placeholder="Rate"
                     className="px-1 py-0.5 text-sm bg-transparent border-0 text-right focus:outline-none focus:ring-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                     value={item.rate || ""}
-                    onChange={(e) => store.updateLineItem(i, "rate", e.target.value)}
+                    onChange={(e) => {
+                      store.updateLineItem(i, "rate", e.target.value);
+                      const val = parseFloat(e.target.value);
+                      if (val > 0) {
+                        setDefaultRate(val);
+                        updateSetting("invoice_default_rate", String(val));
+                      }
+                    }}
                   />
                   <span className="text-sm text-right font-mono">
                     {item.amount ? item.amount.toFixed(2) : "0.00"}

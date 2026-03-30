@@ -333,40 +333,50 @@ export async function fetchPrsNeedingFixes(
 ): Promise<Array<{ repo: string; number: number; title: string; url: string; headRefName: string; author: { login: string }; commentCount: number }>> {
   const results: Array<{ repo: string; number: number; title: string; url: string; headRefName: string; author: { login: string }; commentCount: number }> = [];
 
+  const seen = new Set<string>();
+
   for (const repo of repos) {
-    try {
-      const cmd = Command.create("gh", [
-        "pr", "list",
-        "--repo", repo,
-        "--author", "@me",
-        "--search", "review:changes_requested",
-        "--json", "number,title,url,headRefName,author,reviewDecision",
-        "--limit", "20",
-      ]);
-      const out = await cmd.execute();
-      if (out.code !== 0) continue;
+    // Search for both changes_requested and commented reviews
+    const searches = ["review:changes_requested", "review:commented"];
+    for (const search of searches) {
+      try {
+        const cmd = Command.create("gh", [
+          "pr", "list",
+          "--repo", repo,
+          "--author", "@me",
+          "--search", search,
+          "--json", "number,title,url,headRefName,author,reviewDecision",
+          "--limit", "20",
+        ]);
+        const out = await cmd.execute();
+        if (out.code !== 0) continue;
 
-      const prs = JSON.parse(out.stdout) as Array<Record<string, unknown>>;
-      for (const pr of prs) {
-        // Count only unresolved review comments
-        let commentCount = 0;
-        try {
-          const comments = await fetchReviewComments(repo, pr.number as number);
-          commentCount = comments.length;
-        } catch { /* non-critical */ }
+        const prs = JSON.parse(out.stdout) as Array<Record<string, unknown>>;
+        for (const pr of prs) {
+          const key = `${repo}#${pr.number}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
 
-        results.push({
-          repo,
-          number: pr.number as number,
-          title: pr.title as string,
-          url: pr.url as string,
-          headRefName: (pr.headRefName as string) ?? "",
-          author: { login: ((pr.author as Record<string, unknown>)?.login as string) ?? "" },
-          commentCount,
-        });
+          // Count only unresolved review comments
+          let commentCount = 0;
+          try {
+            const comments = await fetchReviewComments(repo, pr.number as number);
+            commentCount = comments.length;
+          } catch { /* non-critical */ }
+
+          results.push({
+            repo,
+            number: pr.number as number,
+            title: pr.title as string,
+            url: pr.url as string,
+            headRefName: (pr.headRefName as string) ?? "",
+            author: { login: ((pr.author as Record<string, unknown>)?.login as string) ?? "" },
+            commentCount,
+          });
+        }
+      } catch {
+        // skip repos that fail
       }
-    } catch {
-      // skip repos that fail
     }
   }
 

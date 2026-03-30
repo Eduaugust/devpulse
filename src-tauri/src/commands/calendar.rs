@@ -418,13 +418,20 @@ async fn test_authorized_user(
     } else {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        let detail = serde_json::from_str::<serde_json::Value>(&body)
-            .ok()
+        let parsed = serde_json::from_str::<serde_json::Value>(&body).ok();
+        let error_code = parsed.as_ref().and_then(|v| v["error"].as_str()).unwrap_or("");
+        let detail = parsed.as_ref()
             .and_then(|v| v["error_description"].as_str().map(String::from))
             .unwrap_or_else(|| format!("HTTP {}", status));
+
+        let message = if error_code == "invalid_grant" {
+            "Token expired — click Authorize to reconnect your Google account".to_string()
+        } else {
+            format!("Authentication failed: {}", detail)
+        };
         Ok(CalendarConnectionResult {
             connected: false,
-            message: format!("Authentication failed: {}", detail),
+            message,
         })
     }
 }

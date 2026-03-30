@@ -279,3 +279,33 @@ pub fn get_command_runs(
     db.get_command_runs(command_id, limit.unwrap_or(50))
         .map_err(|e| e.to_string())
 }
+
+// ── Activity Mappings ──
+
+#[tauri::command]
+pub fn get_activity_mappings(db: tauri::State<'_, Database>) -> Result<Vec<db::ActivityMapping>, String> {
+    db.get_activity_mappings().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_activity_mapping(
+    db: tauri::State<'_, Database>,
+    mapping: db::ActivityMapping,
+) -> Result<i64, String> {
+    db.save_activity_mapping(&mapping).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_activity_mapping(db: tauri::State<'_, Database>, id: i64) -> Result<(), String> {
+    db.delete_activity_mapping(id).map_err(|e| e.to_string())
+}
+
+// ── Autofill Runs ──
+
+#[tauri::command]
+pub fn get_autofill_runs(
+    db: tauri::State<'_, Database>,
+    limit: Option<i64>,
+) -> Result<Vec<db::AutofillRun>, String> {
+    db.get_autofill_runs(limit.unwrap_or(10)).map_err(|e| e.to_string())
+}

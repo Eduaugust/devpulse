@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use crate::KimaiHttpClient;
+use super::uv::{self, UvResolution, UvSource};
+use crate::{HttpClient, KimaiHttpClient};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct KimaiConnectionResult {
@@ -86,16 +87,26 @@ pub async fn fetch_kimai_timesheets(
         return Err("URL and API token are required".to_string());
     }
 
-    // Encode begin/end: replace '+' with '%2B' for positive UTC offsets (e.g. +05:30)
-    // Colons and dashes are safe in query values per RFC 3986.
-    let enc_begin = begin.replace('+', "%2B");
-    let enc_end = end.replace('+', "%2B");
+    // Strip timezone offset from begin/end — some Kimai servers reject it (HTTP 400).
+    // The server interprets timestamps in its configured timezone.
+    fn strip_tz(s: &str) -> &str {
+        // "2026-03-11T00:00:00-03:00" → "2026-03-11T00:00:00"
+        // "2026-03-11T00:00:00+05:30" → "2026-03-11T00:00:00"
+        // "2026-03-11T00:00:00"       → "2026-03-11T00:00:00" (no change)
+        if let Some(t_pos) = s.find('T') {
+            let after_t = &s[t_pos + 1..];
+            if let Some(offset_pos) = after_t.rfind('+').or_else(|| after_t.rfind('-')) {
+                return &s[..t_pos + 1 + offset_pos];
+            }
+        }
+        s
+    }
 
     let api_url = format!(
         "{}/api/timesheets?begin={}&end={}&order=ASC&size=250&full=true",
         url.trim_end_matches('/'),
-        enc_begin,
-        enc_end
+        strip_tz(&begin),
+        strip_tz(&end),
     );
 
     log::info!("Kimai fetch URL: {}", api_url);
@@ -134,13 +145,61 @@ pub async fn fetch_kimai_timesheets(
     Ok(timesheets)
 }
 
-/// Ensure Kimai MCP server is configured in Claude Code's settings.
-/// Writes/updates ~/.claude/settings.local.json to include the kimai MCP server
-/// using uvx to install directly from GitHub — no local paths needed.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KimaiMcpSetupResult {
+    pub uv_resolution: Option<UvResolution>,
+    pub config_written: bool,
+    pub uv_verified: bool,
+    pub error: Option<String>,
+}
+
+/// Full Kimai MCP setup: resolve uv binary, write MCP config, verify.
 #[tauri::command]
-pub async fn ensure_kimai_mcp(
+pub async fn setup_kimai_mcp(
+    app: tauri::AppHandle,
+    http: tauri::State<'_, HttpClient>,
     kimai_url: String,
     kimai_token: String,
+) -> Result<KimaiMcpSetupResult, String> {
+    // 1. Resolve uv binary
+    let resolution = uv::resolve_uv_binary(&app, &http).await?;
+
+    // 2. Write MCP config
+    let config_written = match write_kimai_mcp_config(&resolution, &kimai_url, &kimai_token) {
+        Ok(()) => true,
+        Err(e) => {
+            return Ok(KimaiMcpSetupResult {
+                uv_resolution: Some(resolution),
+                config_written: false,
+                uv_verified: false,
+                error: Some(format!("Failed to write MCP config: {}", e)),
+            });
+        }
+    };
+
+    // 3. Verify uv works
+    let uv_verified = match &resolution.source {
+        UvSource::SystemUvx => {
+            // For system uvx, verify the uv sibling exists
+            uv::verify_uv("uv").is_ok()
+                || uv::verify_uv(&resolution.binary_path.replace("uvx", "uv")).is_ok()
+        }
+        _ => uv::verify_uv(&resolution.binary_path).is_ok(),
+    };
+
+    Ok(KimaiMcpSetupResult {
+        uv_resolution: Some(resolution),
+        config_written,
+        uv_verified,
+        error: None,
+    })
+}
+
+/// Write the Kimai MCP server config into `~/.claude/settings.local.json`.
+fn write_kimai_mcp_config(
+    resolution: &UvResolution,
+    kimai_url: &str,
+    kimai_token: &str,
 ) -> Result<(), String> {
     let home = dirs::home_dir().ok_or_else(|| "Could not determine home directory".to_string())?;
     let settings_path = home.join(".claude").join("settings.local.json");
@@ -160,16 +219,36 @@ pub async fn ensure_kimai_mcp(
         settings["mcpServers"] = serde_json::json!({});
     }
 
-    // Add/update kimai MCP server entry using uvx + GitHub
-    settings["mcpServers"]["kimai"] = serde_json::json!({
-        "command": "uvx",
-        "args": [
-            "--from", "git+https://github.com/gfb-47/kimai_mcp",
-            "kimai-mcp",
-            format!("--kimai-url={}", kimai_url),
-            format!("--kimai-token={}", kimai_token),
-        ]
-    });
+    // Build MCP config based on uv source
+    let mcp_entry = match &resolution.source {
+        UvSource::SystemUvx => {
+            // System uvx: use "uvx" command directly
+            serde_json::json!({
+                "command": "uvx",
+                "args": [
+                    "--from", "git+https://github.com/gfb-47/kimai_mcp",
+                    "kimai-mcp",
+                    format!("--kimai-url={}", kimai_url),
+                    format!("--kimai-token={}", kimai_token),
+                ]
+            })
+        }
+        UvSource::AppManaged | UvSource::Downloaded => {
+            // App-managed uv: use absolute path with "tool run"
+            serde_json::json!({
+                "command": &resolution.binary_path,
+                "args": [
+                    "tool", "run",
+                    "--from", "git+https://github.com/gfb-47/kimai_mcp",
+                    "kimai-mcp",
+                    format!("--kimai-url={}", kimai_url),
+                    format!("--kimai-token={}", kimai_token),
+                ]
+            })
+        }
+    };
+
+    settings["mcpServers"]["kimai"] = mcp_entry;
 
     // Write back
     let content = serde_json::to_string_pretty(&settings)
@@ -177,5 +256,20 @@ pub async fn ensure_kimai_mcp(
     std::fs::write(&settings_path, content)
         .map_err(|e| format!("Failed to write settings: {}", e))?;
 
+    Ok(())
+}
+
+/// Legacy wrapper — calls setup_kimai_mcp internally for backward compatibility.
+#[tauri::command]
+pub async fn ensure_kimai_mcp(
+    app: tauri::AppHandle,
+    http: tauri::State<'_, HttpClient>,
+    kimai_url: String,
+    kimai_token: String,
+) -> Result<(), String> {
+    let result = setup_kimai_mcp(app, http, kimai_url, kimai_token).await?;
+    if let Some(err) = result.error {
+        return Err(err);
+    }
     Ok(())
 }

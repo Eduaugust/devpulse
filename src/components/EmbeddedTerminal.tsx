@@ -1,10 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
-import { WebLinksAddon } from "@xterm/addon-web-links";
+import type { Terminal } from "@xterm/xterm";
+import type { FitAddon } from "@xterm/addon-fit";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { spawnPty, writePty, resizePty, killPty } from "@/lib/tauri";
-import "@xterm/xterm/css/xterm.css";
 
 interface EmbeddedTerminalProps {
   command: string;
@@ -28,51 +26,69 @@ export function EmbeddedTerminal({
   useEffect(() => {
     if (!containerRef.current) return;
 
-    const term = new Terminal({
-      cursorBlink: true,
-      fontSize: 13,
-      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, monospace",
-      theme: {
-        background: "#0a0a0f",
-        foreground: "#e4e4e7",
-        cursor: "#e4e4e7",
-        selectionBackground: "#3f3f46",
-        black: "#09090b",
-        red: "#ef4444",
-        green: "#22c55e",
-        yellow: "#eab308",
-        blue: "#3b82f6",
-        magenta: "#a855f7",
-        cyan: "#06b6d4",
-        white: "#e4e4e7",
-        brightBlack: "#52525b",
-        brightRed: "#f87171",
-        brightGreen: "#4ade80",
-        brightYellow: "#facc15",
-        brightBlue: "#60a5fa",
-        brightMagenta: "#c084fc",
-        brightCyan: "#22d3ee",
-        brightWhite: "#fafafa",
-      },
-      allowProposedApi: true,
-    });
-
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.loadAddon(new WebLinksAddon());
-    term.open(containerRef.current);
-
-    termRef.current = term;
-    fitRef.current = fit;
-
-    // Initial fit
-    requestAnimationFrame(() => fit.fit());
-
+    let disposed = false;
     let unlistenData: UnlistenFn | undefined;
     let unlistenExit: UnlistenFn | undefined;
-    let disposed = false;
+    let term: Terminal | null = null;
+    let fit: FitAddon | null = null;
 
-    const setup = async () => {
+    // Dynamic import — keeps ~300KB xterm out of the main bundle
+    const init = async () => {
+      const [
+        { Terminal: XTerminal },
+        { FitAddon: XFitAddon },
+        { WebLinksAddon },
+      ] = await Promise.all([
+        import("@xterm/xterm"),
+        import("@xterm/addon-fit"),
+        import("@xterm/addon-web-links"),
+      ]);
+      // Also load CSS dynamically
+      await import("@xterm/xterm/css/xterm.css");
+
+      if (disposed || !containerRef.current) return;
+
+      term = new XTerminal({
+        cursorBlink: true,
+        fontSize: 13,
+        fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, monospace",
+        theme: {
+          background: "#0a0a0f",
+          foreground: "#e4e4e7",
+          cursor: "#e4e4e7",
+          selectionBackground: "#3f3f46",
+          black: "#09090b",
+          red: "#ef4444",
+          green: "#22c55e",
+          yellow: "#eab308",
+          blue: "#3b82f6",
+          magenta: "#a855f7",
+          cyan: "#06b6d4",
+          white: "#e4e4e7",
+          brightBlack: "#52525b",
+          brightRed: "#f87171",
+          brightGreen: "#4ade80",
+          brightYellow: "#facc15",
+          brightBlue: "#60a5fa",
+          brightMagenta: "#c084fc",
+          brightCyan: "#22d3ee",
+          brightWhite: "#fafafa",
+        },
+        allowProposedApi: true,
+      });
+
+      fit = new XFitAddon();
+      term.loadAddon(fit);
+      term.loadAddon(new WebLinksAddon());
+      term.open(containerRef.current);
+
+      termRef.current = term;
+      fitRef.current = fit;
+
+      // Initial fit
+      requestAnimationFrame(() => fit!.fit());
+
+      // Spawn PTY and connect
       const cols = term.cols;
       const rows = term.rows;
 
@@ -95,7 +111,7 @@ export function EmbeddedTerminal({
         "pty:data",
         (event) => {
           if (event.payload.session_id === sid) {
-            term.write(event.payload.data);
+            term?.write(event.payload.data);
           }
         },
       );
@@ -113,31 +129,34 @@ export function EmbeddedTerminal({
       );
     };
 
-    setup().catch((err) => {
-      term.write(`\r\nFailed to start: ${err}\r\n`);
-    });
-
-    // ResizeObserver for auto-fit
-    const ro = new ResizeObserver(() => {
-      if (!disposed && fitRef.current) {
-        fitRef.current.fit();
-        if (sessionRef.current) {
-          resizePty(sessionRef.current, term.cols, term.rows).catch(() => {});
+    let ro: ResizeObserver | undefined;
+    init().catch((err) => {
+      // If term loaded but PTY failed, write error to terminal
+      if (term) term.write(`\r\nFailed to start: ${err}\r\n`);
+    }).then(() => {
+      if (disposed || !containerRef.current || !fitRef.current) return;
+      // ResizeObserver for auto-fit
+      ro = new ResizeObserver(() => {
+        if (!disposed && fitRef.current && termRef.current) {
+          fitRef.current.fit();
+          if (sessionRef.current) {
+            resizePty(sessionRef.current, termRef.current.cols, termRef.current.rows).catch(() => {});
+          }
         }
-      }
+      });
+      ro.observe(containerRef.current!);
     });
-    ro.observe(containerRef.current);
 
     return () => {
       disposed = true;
-      ro.disconnect();
+      ro?.disconnect();
       unlistenData?.();
       unlistenExit?.();
       if (sessionRef.current) {
         killPty(sessionRef.current);
         sessionRef.current = null;
       }
-      term.dispose();
+      term?.dispose();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

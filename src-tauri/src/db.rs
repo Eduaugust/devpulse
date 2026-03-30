@@ -123,6 +123,37 @@ pub struct Invoice {
     pub updated_at: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ActivityMapping {
+    pub id: Option<i64>,
+    pub name: String,
+    pub description: String,
+    pub pattern: String,
+    pub pattern_type: String,
+    pub kimai_project_id: Option<i64>,
+    pub kimai_project_name: String,
+    pub kimai_activity_id: Option<i64>,
+    pub kimai_activity_name: String,
+    pub kimai_tags: String,
+    pub priority: i64,
+    pub enabled: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AutofillRun {
+    pub id: Option<i64>,
+    pub target_date: String,
+    pub status: String,
+    pub result_text: String,
+    pub error_text: String,
+    pub entries_created: i64,
+    pub duration_ms: Option<i64>,
+    pub created_at: String,
+    pub finished_at: Option<String>,
+}
+
 pub struct Database {
     conn: Mutex<Connection>,
 }
@@ -132,7 +163,13 @@ impl Database {
         std::fs::create_dir_all(&app_dir)?;
         let db_path = app_dir.join("devpulse.db");
         let conn = Connection::open(db_path)?;
-        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+        conn.execute_batch("
+            PRAGMA journal_mode=WAL;
+            PRAGMA synchronous=NORMAL;
+            PRAGMA cache_size=-8000;
+            PRAGMA busy_timeout=5000;
+            PRAGMA foreign_keys=ON;
+        ")?;
         let db = Self {
             conn: Mutex::new(conn),
         };
@@ -220,6 +257,7 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_events_created_at ON events(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
             CREATE INDEX IF NOT EXISTS idx_events_repo ON events(repo);
+            CREATE INDEX IF NOT EXISTS idx_events_type_title_repo ON events(event_type, title, repo);
             CREATE INDEX IF NOT EXISTS idx_claude_sessions_created ON claude_sessions(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_commands_slug ON commands(slug);
             CREATE INDEX IF NOT EXISTS idx_command_runs_command ON command_runs(command_id);
@@ -264,6 +302,37 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_invoices_number ON invoices(invoice_number);
             CREATE INDEX IF NOT EXISTS idx_invoices_created ON invoices(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_invoice_profiles_type ON invoice_profiles(profile_type);
+
+            CREATE TABLE IF NOT EXISTS activity_mappings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                pattern TEXT NOT NULL,
+                pattern_type TEXT NOT NULL DEFAULT 'contains',
+                kimai_project_id INTEGER,
+                kimai_project_name TEXT NOT NULL DEFAULT '',
+                kimai_activity_id INTEGER,
+                kimai_activity_name TEXT NOT NULL DEFAULT '',
+                kimai_tags TEXT NOT NULL DEFAULT '',
+                priority INTEGER NOT NULL DEFAULT 0,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS autofill_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                target_date TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'running',
+                result_text TEXT NOT NULL DEFAULT '',
+                error_text TEXT NOT NULL DEFAULT '',
+                entries_created INTEGER NOT NULL DEFAULT 0,
+                duration_ms INTEGER,
+                created_at TEXT NOT NULL,
+                finished_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_autofill_runs_date ON autofill_runs(target_date);
+            CREATE INDEX IF NOT EXISTS idx_autofill_runs_created ON autofill_runs(created_at DESC);
             ",
         )?;
 
@@ -275,6 +344,11 @@ impl Database {
         // Migration: add provider column to monitored_repos
         let _ = conn.execute_batch(
             "ALTER TABLE monitored_repos ADD COLUMN provider TEXT NOT NULL DEFAULT 'github';"
+        );
+
+        // Migration: add description column to activity_mappings
+        let _ = conn.execute_batch(
+            "ALTER TABLE activity_mappings ADD COLUMN description TEXT NOT NULL DEFAULT '';"
         );
 
         // Insert default settings if they don't exist
@@ -292,6 +366,9 @@ impl Database {
             INSERT OR IGNORE INTO settings (key, value) VALUES ('auto_description_enabled', 'false');
             INSERT OR IGNORE INTO settings (key, value) VALUES ('auto_fixes_enabled', 'false');
             INSERT OR IGNORE INTO settings (key, value) VALUES ('timezone', '');
+            INSERT OR IGNORE INTO settings (key, value) VALUES ('autofill_enabled', 'false');
+            INSERT OR IGNORE INTO settings (key, value) VALUES ('autofill_time', '09:00');
+            INSERT OR IGNORE INTO settings (key, value) VALUES ('autofill_context_days', '14');
             ",
         )?;
 
@@ -370,12 +447,12 @@ impl Database {
 
     pub fn event_exists(&self, event_type: &str, title: &str, repo: &str) -> Result<bool, Box<dyn std::error::Error>> {
         let conn = self.conn.lock().unwrap();
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM events WHERE event_type = ?1 AND title = ?2 AND repo = ?3",
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM events WHERE event_type = ?1 AND title = ?2 AND repo = ?3)",
             params![event_type, title, repo],
             |row| row.get(0),
         )?;
-        Ok(count > 0)
+        Ok(exists)
     }
 
     pub fn get_generic_notifications(&self) -> Result<Vec<DevEvent>, Box<dyn std::error::Error>> {
@@ -734,9 +811,18 @@ impl Database {
                 "Generate Report",
                 "Gather dev activity and generate a timesheet report using AI",
                 "report",
-                "Generate a detailed daily development activity report. Analyze the raw data and produce a structured report with key accomplishments, work in progress, time estimates, PRs, code reviews, and blockers.",
+                Self::generate_report_template(),
                 "claude-cli",
                 "[{\"key\":\"date_from\",\"label\":\"From Date\",\"type\":\"date\",\"required\":true},{\"key\":\"date_to\",\"label\":\"To Date\",\"type\":\"date\",\"required\":true},{\"key\":\"include_git\",\"label\":\"Include Git\",\"type\":\"boolean\",\"required\":false,\"default\":\"true\"},{\"key\":\"include_github\",\"label\":\"Include GitHub\",\"type\":\"boolean\",\"required\":false,\"default\":\"true\"}]",
+            ),
+            (
+                "fill-timesheet",
+                "Fill Timesheet",
+                "Propose Kimai timesheet entries from a generated report using Claude terminal",
+                "report",
+                Self::fill_timesheet_template(),
+                "claude-terminal",
+                "[]",
             ),
             (
                 "pr-description",
@@ -998,6 +1084,41 @@ Rules:
 - [ ] Self-review performed
 - [ ] No new warnings introduced
 - [ ] Changes are backward compatible"#
+    }
+
+    fn generate_report_template() -> &'static str {
+        r#"Generate a detailed daily development activity report for {{date_range}}.
+
+Below is the raw data gathered from multiple sources. Analyze it and produce a structured report with:
+- Key accomplishments
+- Work in progress
+- Time estimates per activity (based on commit timestamps)
+- PRs and code reviews
+- Meetings (if any)
+- Blockers
+
+{{gathered_data}}
+
+---
+
+Based on all the data above, generate a structured daily activity report for {{date_range}}. Group activities by project/repo. Use calendar events as the primary source for time allocation (meetings, focus blocks). Use commit timestamps to understand what was worked on and when. Format it as a clean, professional report suitable for timesheet entry. Do NOT invent activities or meetings that aren't in the data."#
+    }
+
+    fn fill_timesheet_template() -> &'static str {
+        r#"I have a daily activity report for {{date_range}}. Based on this report, please propose Kimai timesheet entries using the Kimai MCP tools.
+
+IMPORTANT: Before creating ANY entry, show me what you plan to create and ask for my explicit confirmation. Do NOT create entries without my approval.
+
+Here is the report:
+---
+{{report_content}}
+---
+{{existing_entries}}
+
+Steps:
+1. Check the existing Kimai entries above — do NOT create duplicates
+2. Propose timesheet entries with project, activity, start/end times, and descriptions
+3. List them all first, then wait for my confirmation before creating each one"#
     }
 
     // ── Command Runs CRUD ──
@@ -1273,5 +1394,127 @@ Rules:
             .filter_map(|r| r.ok())
             .collect();
         Ok(runs)
+    }
+
+    // ── Activity Mappings CRUD ──
+
+    pub fn get_activity_mappings(&self) -> Result<Vec<ActivityMapping>, Box<dyn std::error::Error>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, description, pattern, pattern_type, kimai_project_id, kimai_project_name, kimai_activity_id, kimai_activity_name, kimai_tags, priority, enabled, created_at, updated_at
+             FROM activity_mappings ORDER BY priority DESC, name"
+        )?;
+        let mappings = stmt
+            .query_map([], |row| {
+                Ok(ActivityMapping {
+                    id: Some(row.get(0)?),
+                    name: row.get(1)?,
+                    description: row.get(2)?,
+                    pattern: row.get(3)?,
+                    pattern_type: row.get(4)?,
+                    kimai_project_id: row.get(5)?,
+                    kimai_project_name: row.get(6)?,
+                    kimai_activity_id: row.get(7)?,
+                    kimai_activity_name: row.get(8)?,
+                    kimai_tags: row.get(9)?,
+                    priority: row.get(10)?,
+                    enabled: row.get(11)?,
+                    created_at: row.get(12)?,
+                    updated_at: row.get(13)?,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(mappings)
+    }
+
+    pub fn save_activity_mapping(&self, mapping: &ActivityMapping) -> Result<i64, Box<dyn std::error::Error>> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        if let Some(id) = mapping.id {
+            conn.execute(
+                "UPDATE activity_mappings SET name=?1, description=?2, pattern=?3, pattern_type=?4, kimai_project_id=?5, kimai_project_name=?6, kimai_activity_id=?7, kimai_activity_name=?8, kimai_tags=?9, priority=?10, enabled=?11, updated_at=?12 WHERE id=?13",
+                params![
+                    mapping.name, mapping.description, mapping.pattern, mapping.pattern_type,
+                    mapping.kimai_project_id, mapping.kimai_project_name,
+                    mapping.kimai_activity_id, mapping.kimai_activity_name,
+                    mapping.kimai_tags, mapping.priority, mapping.enabled, now, id,
+                ],
+            )?;
+            Ok(id)
+        } else {
+            conn.execute(
+                "INSERT INTO activity_mappings (name, description, pattern, pattern_type, kimai_project_id, kimai_project_name, kimai_activity_id, kimai_activity_name, kimai_tags, priority, enabled, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                params![
+                    mapping.name, mapping.description, mapping.pattern, mapping.pattern_type,
+                    mapping.kimai_project_id, mapping.kimai_project_name,
+                    mapping.kimai_activity_id, mapping.kimai_activity_name,
+                    mapping.kimai_tags, mapping.priority, mapping.enabled, now, now,
+                ],
+            )?;
+            Ok(conn.last_insert_rowid())
+        }
+    }
+
+    pub fn delete_activity_mapping(&self, id: i64) -> Result<(), Box<dyn std::error::Error>> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM activity_mappings WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    // ── Autofill Runs CRUD ──
+
+    pub fn get_autofill_runs(&self, limit: i64) -> Result<Vec<AutofillRun>, Box<dyn std::error::Error>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, target_date, status, result_text, error_text, entries_created, duration_ms, created_at, finished_at
+             FROM autofill_runs ORDER BY created_at DESC LIMIT ?1"
+        )?;
+        let runs = stmt
+            .query_map(params![limit], |row| {
+                Ok(AutofillRun {
+                    id: Some(row.get(0)?),
+                    target_date: row.get(1)?,
+                    status: row.get(2)?,
+                    result_text: row.get(3)?,
+                    error_text: row.get(4)?,
+                    entries_created: row.get(5)?,
+                    duration_ms: row.get(6)?,
+                    created_at: row.get(7)?,
+                    finished_at: row.get(8)?,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(runs)
+    }
+
+    pub fn create_autofill_run(&self, target_date: &str) -> Result<i64, Box<dyn std::error::Error>> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO autofill_runs (target_date, status, created_at) VALUES (?1, 'running', ?2)",
+            params![target_date, now],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn update_autofill_run(
+        &self,
+        id: i64,
+        status: &str,
+        result_text: &str,
+        error_text: &str,
+        entries_created: i64,
+        duration_ms: Option<i64>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE autofill_runs SET status=?1, result_text=?2, error_text=?3, entries_created=?4, duration_ms=?5, finished_at=?6 WHERE id=?7",
+            params![status, result_text, error_text, entries_created, duration_ms, now, id],
+        )?;
+        Ok(())
     }
 }

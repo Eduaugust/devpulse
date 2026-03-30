@@ -105,6 +105,18 @@ export interface AiGenerationResult {
   model: string;
 }
 
+export interface UvResolution {
+  binary_path: string;
+  source: "system_uvx" | "app_managed" | "downloaded";
+}
+
+export interface KimaiMcpSetupResult {
+  uv_resolution: UvResolution | null;
+  config_written: boolean;
+  uv_verified: boolean;
+  error: string | null;
+}
+
 // Claude Code session types
 
 export interface ClaudeSession {
@@ -232,7 +244,7 @@ export interface ReviewResult {
 
 // Background task types
 
-export type BackgroundTaskType = "pr-review" | "post-review" | "report-generation" | "pr-description" | "pr-fixes";
+export type BackgroundTaskType = "pr-review" | "post-review" | "report-generation" | "pr-description" | "pr-fixes" | "fill-timesheet";
 export type BackgroundTaskStatus = "running" | "completed" | "error";
 
 export interface BackgroundTask {
@@ -343,6 +355,60 @@ export interface Invoice {
   status: string;
   created_at: string;
   updated_at: string;
+}
+
+// Activity Mapper + Auto-fill types
+
+export interface ActivityMapping {
+  id: number | null;
+  name: string;
+  description: string;
+  pattern: string;
+  pattern_type: "contains" | "exact" | "starts_with" | "regex";
+  kimai_project_id: number | null;
+  kimai_project_name: string;
+  kimai_activity_id: number | null;
+  kimai_activity_name: string;
+  kimai_tags: string;
+  priority: number;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AutofillRun {
+  id: number | null;
+  target_date: string;
+  status: "running" | "completed" | "error";
+  result_text: string;
+  error_text: string;
+  entries_created: number;
+  duration_ms: number | null;
+  created_at: string;
+  finished_at: string | null;
+}
+
+export interface AutofillResult {
+  run_id: number;
+  success: boolean;
+  message: string;
+  entries_created: number;
+}
+
+export interface GatherResult {
+  git_data: string;
+  github_data: string;
+  kimai_data: string;
+  calendar_data: string;
+  existing_kimai_entries: string;
+  activity_mappings: string;
+}
+
+export interface GitLogEntry {
+  hash: string;
+  date: string;
+  message: string;
+  repo_name: string;
 }
 
 export interface PrDetail {

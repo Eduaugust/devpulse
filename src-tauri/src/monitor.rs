@@ -5,10 +5,15 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_shell::ShellExt;
 
+use chrono::{Datelike, Timelike};
+
 use crate::commands::system::send_notification_with_app;
 use crate::HttpClient;
 
 use crate::db::{Database, DevEvent};
+
+/// Tracks the last date auto-fill was executed to prevent duplicate runs.
+static LAST_AUTOFILL_DATE: Mutex<Option<String>> = Mutex::new(None);
 
 /// Tracks repo/PR combos that have already been auto-reviewed this session.
 static AUTO_REVIEWED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
@@ -107,6 +112,11 @@ async fn monitor_loop(app: AppHandle) {
             log::warn!("Monitor poll error: {}", e);
         }
 
+        // Check auto-fill schedule
+        if let Err(e) = check_autofill_schedule(&app).await {
+            log::warn!("Auto-fill schedule check error: {}", e);
+        }
+
         // Sleep for the interval
         tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs)).await;
     }
@@ -121,21 +131,22 @@ async fn poll_github(app: &AppHandle) -> Result<(), Box<dyn std::error::Error + 
     let az_repos: Vec<_> = repos.iter().filter(|r| r.provider == "azure").cloned().collect();
     let bb_repos: Vec<_> = repos.iter().filter(|r| r.provider == "bitbucket").cloned().collect();
 
-    let mut new_events = poll_pr_events(app, &db, &gh_repos).await;
-    new_events.extend(poll_notifications(app, &db).await);
+    // Poll all providers concurrently
+    let (gh_events, notif_events, gl_events, gl_todos, az_events, bb_events) = tokio::join!(
+        poll_pr_events(app, &db, &gh_repos),
+        poll_notifications(app, &db),
+        async { if gl_repos.is_empty() { vec![] } else { poll_gitlab_mr_events(app, &db, &gl_repos).await } },
+        async { if gl_repos.is_empty() { vec![] } else { poll_gitlab_todos(app, &db).await } },
+        async { if az_repos.is_empty() { vec![] } else { poll_azure_pr_events(app, &db, &az_repos).await } },
+        async { if bb_repos.is_empty() { vec![] } else { poll_bitbucket_pr_events(app, &db, &bb_repos).await } },
+    );
 
-    if !gl_repos.is_empty() {
-        new_events.extend(poll_gitlab_mr_events(app, &db, &gl_repos).await);
-        new_events.extend(poll_gitlab_todos(app, &db).await);
-    }
-
-    if !az_repos.is_empty() {
-        new_events.extend(poll_azure_pr_events(app, &db, &az_repos).await);
-    }
-
-    if !bb_repos.is_empty() {
-        new_events.extend(poll_bitbucket_pr_events(app, &db, &bb_repos).await);
-    }
+    let mut new_events = gh_events;
+    new_events.extend(notif_events);
+    new_events.extend(gl_events);
+    new_events.extend(gl_todos);
+    new_events.extend(az_events);
+    new_events.extend(bb_events);
 
     if !new_events.is_empty() {
         dispatch_new_events(app, &db, &new_events);
@@ -673,7 +684,7 @@ async fn poll_bitbucket_pr_events(
 }
 
 /// Simple base64 encoder for basic auth.
-fn base64_encode(data: &[u8]) -> String {
+pub(crate) fn base64_encode(data: &[u8]) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut result = String::new();
     for chunk in data.chunks(3) {
@@ -732,6 +743,11 @@ async fn poll_notifications(app: &AppHandle, db: &Database) -> Vec<DevEvent> {
 
                     let mut detail_reason = reason.to_string();
 
+                    // Quick check: skip if base event already exists (avoids N+1 detail fetches)
+                    if db.event_exists(&event_type, &title, &repo_name).unwrap_or(true) {
+                        continue;
+                    }
+
                     // For PR author notifications, fetch the latest review to get the specific action
                     if subject_type == "PullRequest" && reason == "author" {
                         if let Some(comment_url) = notif["subject"]["latest_comment_url"].as_str() {
@@ -770,10 +786,10 @@ async fn poll_notifications(app: &AppHandle, db: &Database) -> Vec<DevEvent> {
                                 }
                             }
                         }
-                    }
-
-                    if db.event_exists(&event_type, &title, &repo_name).unwrap_or(true) {
-                        continue;
+                        // Re-check with refined event_type after detail fetch
+                        if db.event_exists(&event_type, &title, &repo_name).unwrap_or(true) {
+                            continue;
+                        }
                     }
 
                     let event = DevEvent {
@@ -800,7 +816,8 @@ async fn poll_notifications(app: &AppHandle, db: &Database) -> Vec<DevEvent> {
 
 /// Emit events to frontend, send notifications, and trigger auto-actions.
 fn dispatch_new_events(app: &AppHandle, db: &Database, new_events: &[DevEvent]) {
-    let _ = app.emit("monitor:new-events", new_events);
+    // Signal frontend to refresh — no payload to avoid serializing large event list
+    let _ = app.emit("monitor:new-events", ());
 
     // Send native notifications
     if get_setting_or(db, "notifications_enabled", "true") == "true" {
@@ -873,11 +890,14 @@ fn dispatch_new_events(app: &AppHandle, db: &Database, new_events: &[DevEvent]) 
 
     // Auto-fixes
     if get_setting_or(db, "auto_fixes_enabled", "false") == "true" {
+        let include_comments = get_setting_or(db, "auto_fixes_comments", "false") == "true";
         let mut fixed = AUTO_FIXED.lock().unwrap();
         let set = fixed.get_or_insert_with(HashSet::new);
 
         for event in new_events {
-            if event.event_type == "changes_requested" {
+            let should_fix = event.event_type == "changes_requested"
+                || (include_comments && event.event_type == "comment");
+            if should_fix {
                 if let Some(pr_number) = extract_pr_number_from_url(&event.url) {
                     let key = format!("{}#{}", event.repo, pr_number);
                     if !set.insert(key) {
@@ -896,6 +916,92 @@ fn dispatch_new_events(app: &AppHandle, db: &Database, new_events: &[DevEvent]) 
 /// Extract PR number from a GitHub URL like "https://github.com/owner/repo/pull/123"
 fn extract_pr_number_from_url(url: &str) -> Option<i64> {
     url.split('/').last().and_then(|s| s.parse::<i64>().ok())
+}
+
+/// Check if auto-fill should run based on the configured schedule.
+async fn check_autofill_schedule(
+    app: &AppHandle,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let db = app.state::<Database>();
+
+    let enabled = get_setting_or(&db, "autofill_enabled", "false");
+    if enabled != "true" {
+        return Ok(());
+    }
+
+    let scheduled_time = get_setting_or(&db, "autofill_time", "09:00");
+    let now = chrono::Local::now();
+    let today_str = now.format("%Y-%m-%d").to_string();
+
+    // Check if already ran today
+    {
+        let last = LAST_AUTOFILL_DATE.lock().unwrap();
+        if let Some(ref last_date) = *last {
+            if last_date == &today_str {
+                return Ok(());
+            }
+        }
+    }
+
+    // Parse scheduled time
+    let parts: Vec<&str> = scheduled_time.split(':').collect();
+    let (sched_hour, sched_min) = match (parts.first(), parts.get(1)) {
+        (Some(h), Some(m)) => {
+            let hour = h.parse::<u32>().unwrap_or(9);
+            let min = m.parse::<u32>().unwrap_or(0);
+            (hour, min)
+        }
+        _ => (9, 0),
+    };
+
+    let current_hour = now.hour();
+    let current_min = now.minute();
+
+    // Only trigger if we're past the scheduled time
+    if current_hour < sched_hour || (current_hour == sched_hour && current_min < sched_min) {
+        return Ok(());
+    }
+
+    // Mark as ran today
+    {
+        let mut last = LAST_AUTOFILL_DATE.lock().unwrap();
+        *last = Some(today_str);
+    }
+
+    // Determine target date: skip weekends
+    // Mon(1)→Fri, Tue-Fri→previous day, Sat/Sun→skip
+    let weekday = now.weekday();
+    if weekday == chrono::Weekday::Sat || weekday == chrono::Weekday::Sun {
+        return Ok(());
+    }
+    let days_back: i64 = if weekday == chrono::Weekday::Mon { 3 } else { 1 };
+    let target = (now - chrono::Duration::days(days_back))
+        .format("%Y-%m-%d")
+        .to_string();
+
+    log::info!("Auto-fill triggered for {}", target);
+
+    let app_clone = app.clone();
+    tokio::spawn(async move {
+        match crate::commands::autofill::run_autofill_internal(&app_clone, &target).await {
+            Ok(result) => {
+                if result.success {
+                    log::info!(
+                        "Auto-fill completed for {}: {} entries",
+                        target,
+                        result.entries_created
+                    );
+                } else {
+                    log::warn!("Auto-fill failed for {}: {}", target, result.message);
+                }
+            }
+            Err(e) => {
+                log::warn!("Auto-fill error for {}: {}", target, e);
+            }
+        }
+    });
+
+    Ok(())
 }
 
 /// One-time backfill: reclassify old generic "notification" events by fetching PR review details.
@@ -958,7 +1064,7 @@ async fn backfill_notifications(app: &AppHandle) -> Result<(), Box<dyn std::erro
     }
 
     // Notify frontend to refresh
-    let _ = app.emit("monitor:new-events", &[] as &[String]);
+    let _ = app.emit("monitor:new-events", ());
 
     Ok(())
 }

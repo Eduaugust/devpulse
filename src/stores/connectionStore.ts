@@ -2,7 +2,7 @@ import { create } from "zustand";
 import type { ConnectionStatus } from "@/lib/types";
 import * as commands from "@/lib/tauri";
 import { getCredential } from "@/lib/credentials";
-import { useSettingsStore } from "./settingsStore";
+
 
 interface ConnectionStore {
   github: ConnectionStatus;
@@ -215,17 +215,15 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
 
   checkAll: async () => {
     const store = useConnectionStore.getState();
-    const { getSetting } = useSettingsStore.getState();
-    const on = (key: string) => getSetting(`conn_${key}`, "true") === "true";
     await Promise.all([
-      on("github") ? store.checkGitHub() : Promise.resolve(),
-      on("gitlab") ? store.checkGitLab() : Promise.resolve(),
-      on("azure") ? store.checkAzure() : Promise.resolve(),
-      on("bitbucket") ? store.checkBitbucket() : Promise.resolve(),
-      on("kimai") ? store.checkKimai() : Promise.resolve(),
-      on("calendar") ? store.checkCalendar() : Promise.resolve(),
-      on("claude") ? store.checkClaude() : Promise.resolve(),
-      on("claude_cli") ? store.checkClaudeCli() : Promise.resolve(),
+      store.checkGitHub(),
+      store.checkGitLab(),
+      store.checkAzure(),
+      store.checkBitbucket(),
+      store.checkKimai(),
+      store.checkCalendar(),
+      store.checkClaude(),
+      store.checkClaudeCli(),
     ]);
   },
 }));

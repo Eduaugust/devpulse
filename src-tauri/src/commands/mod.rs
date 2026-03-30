@@ -1,9 +1,14 @@
+pub mod autofill;
 pub mod azure;
 pub mod bitbucket;
+pub mod credentials;
 pub mod db;
+pub mod gather;
+pub mod git;
 pub mod github;
 pub mod gitlab;
 pub mod kimai;
 pub mod calendar;
 pub mod claude;
+pub mod uv;
 pub mod system;
