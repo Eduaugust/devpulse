@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { useEventStore } from "@/stores/eventStore";
 import { useConnectionStore } from "@/stores/connectionStore";
+import { useSettingsStore } from "@/stores/settingsStore";
 import { StatusPill } from "@/components/StatusPill";
 import { EventCard } from "@/components/EventCard";
+import * as commands from "@/lib/tauri";
 import type { DevEvent } from "@/lib/types";
 import {
   GitPullRequest,
@@ -60,16 +62,22 @@ function groupByDay(events: DevEvent[]): [string, DevEvent[]][] {
 
 export function Dashboard() {
   const { recentEvents, fetchRecentEvents } = useEventStore();
-  const { github, kimai, calendar, claude, checkAll } = useConnectionStore();
+  const { github, gitlab, azure, bitbucket, kimai, calendar, claude, checkAll } = useConnectionStore();
+  const { getSetting } = useSettingsStore();
+  const on = (key: string) => getSetting(`conn_${key}`, "true") === "true";
+
+  const [allEvents, setAllEvents] = useState<DevEvent[]>([]);
 
   useEffect(() => {
     fetchRecentEvents();
     checkAll();
+    // Fetch a larger set for accurate stats
+    commands.getEvents({ limit: 200 }).then(setAllEvents).catch(() => {});
   }, [fetchRecentEvents, checkAll]);
 
   const [statPeriod, setStatPeriod] = useState<StatPeriod>("today");
 
-  const periodEvents = useMemo(() => filterByPeriod(recentEvents, statPeriod), [recentEvents, statPeriod]);
+  const periodEvents = useMemo(() => filterByPeriod(allEvents, statPeriod), [allEvents, statPeriod]);
 
   const prTypes = new Set(["pr_created", "pr_activity", "pr_approved", "changes_requested", "review_dismissed"]);
   const notifTypes = new Set(["notification", "comment", "mention", "assigned", "ci_activity", "approval_requested", "issue_activity", "release", "discussion"]);
@@ -88,11 +96,14 @@ export function Dashboard() {
         </p>
       </div>
 
-      <div className="flex gap-4">
-        <StatusPill status={github} label="GitHub" />
-        <StatusPill status={kimai} label="Kimai" />
-        <StatusPill status={calendar} label="Calendar" />
-        <StatusPill status={claude} label="Claude" />
+      <div className="flex gap-4 flex-wrap">
+        {on("github") && <StatusPill status={github} label="GitHub" />}
+        {on("gitlab") && <StatusPill status={gitlab} label="GitLab" />}
+        {on("azure") && <StatusPill status={azure} label="Azure" />}
+        {on("bitbucket") && <StatusPill status={bitbucket} label="Bitbucket" />}
+        {on("kimai") && <StatusPill status={kimai} label="Kimai" />}
+        {on("calendar") && <StatusPill status={calendar} label="Calendar" />}
+        {on("claude") && <StatusPill status={claude} label="Claude" />}
       </div>
 
       <div className="flex items-center gap-1 rounded-lg border bg-card p-1 w-fit">

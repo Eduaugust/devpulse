@@ -1,10 +1,12 @@
 mod commands;
 mod db;
 mod monitor;
+mod pty;
 mod terminal;
 mod tray;
 
 use db::Database;
+use std::time::Duration;
 use tauri::Manager;
 
 /// Shared HTTP client for general API calls (Claude, Calendar, etc.)
@@ -18,7 +20,6 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_sql::Builder::new().build())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
@@ -37,10 +38,19 @@ pub fn run() {
             let database =
                 Database::new(app_dir).expect("Failed to initialize database");
             app.manage(database);
-            app.manage(HttpClient(reqwest::Client::new()));
+            app.manage(HttpClient(
+                reqwest::Client::builder()
+                    .connect_timeout(Duration::from_secs(10))
+                    .timeout(Duration::from_secs(30))
+                    .build()
+                    .expect("Failed to build HTTP client"),
+            ));
+            app.manage(pty::PtyState::default());
             app.manage(KimaiHttpClient(
                 reqwest::Client::builder()
                     .redirect(reqwest::redirect::Policy::none())
+                    .connect_timeout(Duration::from_secs(10))
+                    .timeout(Duration::from_secs(30))
                     .build()
                     .expect("Failed to build Kimai HTTP client"),
             ));
@@ -116,21 +126,61 @@ pub fn run() {
             commands::db::update_command_run,
             commands::db::delete_command_run,
             commands::db::get_command_runs,
+            // Activity Mapping commands
+            commands::db::get_activity_mappings,
+            commands::db::save_activity_mapping,
+            commands::db::delete_activity_mapping,
+            // Autofill commands
+            commands::db::get_autofill_runs,
+            commands::autofill::run_autofill,
+            // Data gathering commands
+            commands::gather::gather_report_data,
+            commands::git::fetch_git_log,
+            // Invoice commands
+            commands::db::get_invoice_profiles,
+            commands::db::save_invoice_profile,
+            commands::db::delete_invoice_profile,
+            commands::db::get_invoices,
+            commands::db::get_invoice,
+            commands::db::save_invoice,
+            commands::db::delete_invoice,
             // GitHub commands
             commands::github::check_gh_auth,
             commands::github::fetch_my_prs,
             commands::github::fetch_my_reviews,
             commands::github::fetch_notifications,
             commands::github::post_gh_review,
+            // GitLab commands
+            commands::gitlab::check_glab_auth,
+            commands::gitlab::fetch_my_mrs,
+            commands::gitlab::fetch_my_mr_reviews,
+            commands::gitlab::fetch_gitlab_todos,
+            commands::gitlab::post_glab_review,
+            // Azure DevOps commands
+            commands::azure::check_az_auth,
+            commands::azure::fetch_az_my_prs,
+            commands::azure::fetch_az_my_reviews,
+            commands::azure::az_pr_set_vote,
+            commands::azure::post_az_review_comment,
+            // Bitbucket commands
+            commands::bitbucket::check_bb_auth,
+            commands::bitbucket::fetch_bb_repos,
+            commands::bitbucket::fetch_bb_prs,
+            commands::bitbucket::post_bb_comment,
+            commands::bitbucket::approve_bb_pr,
+            commands::bitbucket::edit_bb_pr_body,
+            commands::bitbucket::fetch_bb_pr_diff,
             // Integration commands
             commands::kimai::test_kimai_connection,
             commands::kimai::fetch_kimai_timesheets,
             commands::kimai::ensure_kimai_mcp,
+            commands::kimai::setup_kimai_mcp,
             commands::calendar::test_calendar_connection,
             commands::calendar::authorize_calendar,
             commands::calendar::cancel_calendar_auth,
             commands::calendar::fetch_calendar_events,
             commands::claude::test_claude_connection,
+            commands::claude::test_claude_cli,
             commands::claude::generate_with_ai,
             commands::claude::run_claude_cli,
             // System commands
@@ -138,6 +188,11 @@ pub fn run() {
             commands::system::send_test_notification,
             // Terminal commands
             terminal::open_claude_terminal,
+            // PTY commands
+            pty::spawn_pty,
+            pty::write_pty,
+            pty::resize_pty,
+            pty::kill_pty,
             // Monitor commands
             monitor::start_monitor,
             monitor::stop_monitor,

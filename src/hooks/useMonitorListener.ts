@@ -2,7 +2,6 @@ import { useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
-import { Command } from "@tauri-apps/plugin-shell";
 import { useEventStore } from "@/stores/eventStore";
 import { useBackgroundTaskStore } from "@/stores/backgroundTaskStore";
 import { useGithubDataStore } from "@/stores/githubDataStore";
@@ -11,15 +10,16 @@ import { runDescription } from "@/lib/descriptionRunner";
 import { findLocalRepo, releaseLocalRepo, checkoutPrBranch, buildFixPrompt } from "@/lib/fixRunner";
 import { startMonitor, isMonitorRunning, getMonitoredRepos, openClaudeTerminal } from "@/lib/tauri";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { detectUsername, editPrBody, fetchPrBranch } from "@/lib/gitProvider";
+import type { GitProvider } from "@/lib/types";
 
-// Cache GitHub username once per app session (avoids calling `gh api user` per PR)
-let cachedMyLogin: string | null = null;
-async function getMyGitHubLogin(): Promise<string> {
-  if (cachedMyLogin !== null) return cachedMyLogin;
-  const cmd = Command.create("gh", ["api", "user", "-q", ".login"]);
-  const out = await cmd.execute();
-  cachedMyLogin = out.code === 0 ? out.stdout.trim() : "";
-  return cachedMyLogin;
+// Cache username per provider once per app session
+const cachedLogins: Record<string, string | null> = {};
+async function getMyLogin(provider: GitProvider): Promise<string> {
+  if (cachedLogins[provider] !== undefined) return cachedLogins[provider] ?? "";
+  const login = await detectUsername(provider);
+  cachedLogins[provider] = login;
+  return login;
 }
 
 export function useMonitorListener() {
@@ -112,9 +112,14 @@ export function useMonitorListener() {
           prNumber,
         });
 
+        // Resolve provider for this repo
+        const monitoredRepos = await getMonitoredRepos();
+        const monitoredRepo = monitoredRepos.find((r) => r.full_name === repo);
+        const provider = (monitoredRepo?.provider ?? "github") as GitProvider;
+
         // Skip if user already has pending (unresolved) review comments on this PR
         try {
-          const myLogin = await getMyGitHubLogin();
+          const myLogin = await getMyLogin(provider);
           if (myLogin) {
             const comments = await fetchReviewComments(repo, prNumber);
             const myPendingComments = comments.filter((c) => c.user.login === myLogin);
@@ -182,7 +187,7 @@ export function useMonitorListener() {
 
     const unlisten = listen<{ repo: string; prNumber: number }>(
       "monitor:auto-description",
-      (event) => {
+      async (event) => {
         const { repo, prNumber } = event.payload;
         const key = `${repo}#${prNumber}`;
         if (describedPrs.has(key)) return;
@@ -195,16 +200,14 @@ export function useMonitorListener() {
           prNumber,
         });
 
+        // Resolve provider
+        const allRepos = await getMonitoredRepos();
+        const matched = allRepos.find((r) => r.full_name === repo);
+        const descProvider = (matched?.provider ?? "github") as GitProvider;
+
         runDescription(repo, prNumber)
           .then(async (description) => {
-            const editCmd = Command.create("gh", [
-              "pr", "edit", "--repo", repo, String(prNumber),
-              "--body", description,
-            ]);
-            const editOut = await editCmd.execute();
-            if (editOut.code !== 0) {
-              throw new Error("Failed to post description: " + editOut.stderr);
-            }
+            await editPrBody(descProvider, repo, prNumber, description);
             updateTask(taskId, {
               status: "completed",
               result: "Description posted",
@@ -246,15 +249,13 @@ export function useMonitorListener() {
         });
 
         try {
-          const branchCmd = Command.create("gh", [
-            "pr", "view", "--repo", repo, String(prNumber),
-            "--json", "headRefName", "--jq", ".headRefName",
-          ]);
-          const branchOut = await branchCmd.execute();
-          if (branchOut.code !== 0) throw new Error("Failed to get PR branch");
-          const prBranch = branchOut.stdout.trim();
+          const fixRepos = await getMonitoredRepos();
+          const fixMatched = fixRepos.find((r) => r.full_name === repo);
+          const fixProvider = (fixMatched?.provider ?? "github") as GitProvider;
 
-          const monitoredRepos = await getMonitoredRepos();
+          const prBranch = await fetchPrBranch(fixProvider, repo, prNumber);
+
+          const monitoredRepos = fixRepos;
           const monitoredRepo = monitoredRepos.find((r) => r.full_name === repo);
           const baseBranch = monitoredRepo?.base_branch || "development";
 

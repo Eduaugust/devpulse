@@ -16,6 +16,14 @@ import type {
   ClaudeSession,
   CommandDef,
   CommandRun,
+  InvoiceProfile,
+  Invoice,
+  KimaiMcpSetupResult,
+  ActivityMapping,
+  AutofillRun,
+  AutofillResult,
+  GatherResult,
+  GitLogEntry,
 } from "./types";
 
 // DB commands
@@ -41,8 +49,8 @@ export const removeLocalRepo = (id: number) =>
 export const getMonitoredRepos = () =>
   invoke<MonitoredRepo[]>("get_monitored_repos");
 
-export const addMonitoredRepo = (owner: string, name: string) =>
-  invoke<number>("add_monitored_repo", { owner, name });
+export const addMonitoredRepo = (owner: string, name: string, provider?: string) =>
+  invoke<number>("add_monitored_repo", { owner, name, provider: provider ?? "github" });
 
 export const removeMonitoredRepo = (id: number) =>
   invoke<void>("remove_monitored_repo", { id });
@@ -70,6 +78,58 @@ export const fetchNotifications = () =>
 export const postGhReview = (repo: string, prNumber: number, payloadJson: string) =>
   invoke<string>("post_gh_review", { repo, prNumber, payloadJson });
 
+// GitLab commands
+export const checkGlabAuth = () => invoke<boolean>("check_glab_auth");
+
+export const fetchMyMrs = (repo: string) =>
+  invoke<GhPr[]>("fetch_my_mrs", { repo });
+
+export const fetchMyMrReviews = (repo: string) =>
+  invoke<GhPr[]>("fetch_my_mr_reviews", { repo });
+
+export const fetchGitlabTodos = () =>
+  invoke<GhNotification[]>("fetch_gitlab_todos");
+
+export const postGlabReview = (repo: string, mrNumber: number, body: string) =>
+  invoke<string>("post_glab_review", { repo, mrNumber, body });
+
+// Azure DevOps commands
+export const checkAzAuth = () => invoke<boolean>("check_az_auth");
+
+export const fetchAzMyPrs = (org: string, project: string, repo: string) =>
+  invoke<GhPr[]>("fetch_az_my_prs", { org, project, repo });
+
+export const fetchAzMyReviews = (org: string, project: string, repo: string) =>
+  invoke<GhPr[]>("fetch_az_my_reviews", { org, project, repo });
+
+export const azPrSetVote = (org: string, project: string, prId: number, vote: string) =>
+  invoke<string>("az_pr_set_vote", { org, project, prId, vote });
+
+export const postAzReviewComment = (org: string, project: string, repoId: string, prId: number, body: string) =>
+  invoke<string>("post_az_review_comment", { org, project, repoId, prId, body });
+
+// Bitbucket commands
+export const checkBbAuth = (username: string, appPassword: string) =>
+  invoke<{ username: string; display_name: string }>("check_bb_auth", { username, appPassword });
+
+export const fetchBbRepos = (username: string, appPassword: string, workspace: string) =>
+  invoke<string[]>("fetch_bb_repos", { username, appPassword, workspace });
+
+export const fetchBbPrs = (username: string, appPassword: string, workspace: string, repoSlug: string) =>
+  invoke<GhPr[]>("fetch_bb_prs", { username, appPassword, workspace, repoSlug });
+
+export const postBbComment = (username: string, appPassword: string, workspace: string, repoSlug: string, prId: number, body: string) =>
+  invoke<string>("post_bb_comment", { username, appPassword, workspace, repoSlug, prId, body });
+
+export const fetchBbPrDiff = (username: string, appPassword: string, workspace: string, repoSlug: string, prId: number) =>
+  invoke<string>("fetch_bb_pr_diff", { username, appPassword, workspace, repoSlug, prId });
+
+export const approveBbPr = (username: string, appPassword: string, workspace: string, repoSlug: string, prId: number) =>
+  invoke<string>("approve_bb_pr", { username, appPassword, workspace, repoSlug, prId });
+
+export const editBbPrBody = (username: string, appPassword: string, workspace: string, repoSlug: string, prId: number, body: string) =>
+  invoke<string>("edit_bb_pr_body", { username, appPassword, workspace, repoSlug, prId, body });
+
 // Integration commands
 export const testKimaiConnection = (url: string, apiToken: string) =>
   invoke<KimaiConnectionResult>("test_kimai_connection", { url, apiToken });
@@ -80,9 +140,13 @@ export const fetchKimaiTimesheets = (url: string, apiToken: string, begin: strin
 export const ensureKimaiMcp = (kimaiUrl: string, kimaiToken: string) =>
   invoke<void>("ensure_kimai_mcp", { kimaiUrl, kimaiToken });
 
-export const testCalendarConnection = (credentialsJson: string) =>
+export const setupKimaiMcp = (kimaiUrl: string, kimaiToken: string) =>
+  invoke<KimaiMcpSetupResult>("setup_kimai_mcp", { kimaiUrl, kimaiToken });
+
+export const testCalendarConnection = (credentialsJson: string, calendarId?: string) =>
   invoke<CalendarConnectionResult>("test_calendar_connection", {
     credentialsJson,
+    calendarId: calendarId ?? null,
   });
 
 export const authorizeCalendar = (clientConfigJson: string) =>
@@ -91,11 +155,14 @@ export const authorizeCalendar = (clientConfigJson: string) =>
 export const cancelCalendarAuth = () =>
   invoke<void>("cancel_calendar_auth");
 
-export const fetchCalendarEvents = (credentialsJson: string, timeMin: string, timeMax: string) =>
-  invoke<CalendarEvent[]>("fetch_calendar_events", { credentialsJson, timeMin, timeMax });
+export const fetchCalendarEvents = (credentialsJson: string, timeMin: string, timeMax: string, calendarId?: string, timezone?: string) =>
+  invoke<CalendarEvent[]>("fetch_calendar_events", { credentialsJson, timeMin, timeMax, calendarId: calendarId ?? null, timezone: timezone ?? null });
 
 export const testClaudeConnection = (apiKey: string) =>
   invoke<ClaudeConnectionResult>("test_claude_connection", { apiKey });
+
+export const testClaudeCli = () =>
+  invoke<ClaudeConnectionResult>("test_claude_cli");
 
 export const generateWithAi = (apiKey: string, prompt: string) =>
   invoke<AiGenerationResult>("generate_with_ai", { apiKey, prompt });
@@ -116,6 +183,19 @@ export const openClaudeTerminal = (opts: {
     initialPrompt: opts.initialPrompt ?? null,
     terminal: opts.terminal ?? null,
   });
+
+// PTY commands
+export const spawnPty = (command: string, args: string[], cwd: string | null, cols: number, rows: number) =>
+  invoke<string>("spawn_pty", { command, args, cwd, cols, rows });
+
+export const writePty = (sessionId: string, data: string) =>
+  invoke<void>("write_pty", { sessionId, data });
+
+export const resizePty = (sessionId: string, cols: number, rows: number) =>
+  invoke<void>("resize_pty", { sessionId, cols, rows });
+
+export const killPty = (sessionId: string) =>
+  invoke<void>("kill_pty", { sessionId });
 
 // System commands
 export const checkCommandAvailable = (command: string) =>
@@ -198,4 +278,66 @@ export const deleteCommandRun = (id: number) =>
 
 export const getCommandRuns = (commandId?: number, limit?: number) =>
   invoke<CommandRun[]>("get_command_runs", { commandId: commandId ?? null, limit: limit ?? 50 });
+
+// Invoice commands
+export const getInvoiceProfiles = (profileType?: string) =>
+  invoke<InvoiceProfile[]>("get_invoice_profiles", { profileType: profileType ?? null });
+
+export const saveInvoiceProfile = (profile: InvoiceProfile) =>
+  invoke<number>("save_invoice_profile", { profile });
+
+export const deleteInvoiceProfile = (id: number) =>
+  invoke<void>("delete_invoice_profile", { id });
+
+export const getInvoices = (limit?: number) =>
+  invoke<Invoice[]>("get_invoices", { limit: limit ?? 50 });
+
+export const getInvoice = (id: number) =>
+  invoke<Invoice | null>("get_invoice", { id });
+
+export const saveInvoice = (invoice: Invoice) =>
+  invoke<number>("save_invoice", { invoice });
+
+export const deleteInvoice = (id: number) =>
+  invoke<void>("delete_invoice", { id });
+
+// Activity Mapping commands
+export const getActivityMappings = () =>
+  invoke<ActivityMapping[]>("get_activity_mappings");
+
+export const saveActivityMapping = (mapping: ActivityMapping) =>
+  invoke<number>("save_activity_mapping", { mapping });
+
+export const deleteActivityMapping = (id: number) =>
+  invoke<void>("delete_activity_mapping", { id });
+
+// Autofill commands
+export const getAutofillRuns = (limit?: number) =>
+  invoke<AutofillRun[]>("get_autofill_runs", { limit: limit ?? 10 });
+
+export const runAutofill = (targetDate: string) =>
+  invoke<AutofillResult>("run_autofill", { targetDate });
+
+// Data gathering commands
+export const gatherReportData = (opts: {
+  dateFrom: string;
+  dateTo: string;
+  includeGit?: boolean;
+  includeGithub?: boolean;
+  includeKimai?: boolean;
+  includeCalendar?: boolean;
+  kimaiContextDays?: number;
+}) =>
+  invoke<GatherResult>("gather_report_data", {
+    dateFrom: opts.dateFrom,
+    dateTo: opts.dateTo,
+    includeGit: opts.includeGit ?? true,
+    includeGithub: opts.includeGithub ?? true,
+    includeKimai: opts.includeKimai ?? true,
+    includeCalendar: opts.includeCalendar ?? true,
+    kimaiContextDays: opts.kimaiContextDays ?? 14,
+  });
+
+export const fetchGitLog = (afterDate: string, beforeDate: string) =>
+  invoke<GitLogEntry[]>("fetch_git_log", { afterDate, beforeDate });
 

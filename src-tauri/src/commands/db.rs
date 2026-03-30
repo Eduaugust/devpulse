@@ -56,8 +56,9 @@ pub fn add_monitored_repo(
     db: tauri::State<'_, Database>,
     owner: String,
     name: String,
+    provider: Option<String>,
 ) -> Result<i64, String> {
-    db.add_monitored_repo(&owner, &name)
+    db.add_monitored_repo(&owner, &name, provider.as_deref().unwrap_or("github"))
         .map_err(|e| e.to_string())
 }
 
@@ -210,6 +211,65 @@ pub fn delete_command_run(db: tauri::State<'_, Database>, id: i64) -> Result<(),
     db.delete_command_run(id).map_err(|e| e.to_string())
 }
 
+// ── Invoice Profiles ──
+
+#[tauri::command]
+pub fn get_invoice_profiles(
+    db: tauri::State<'_, Database>,
+    profile_type: Option<String>,
+) -> Result<Vec<db::InvoiceProfile>, String> {
+    db.get_invoice_profiles(profile_type.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_invoice_profile(
+    db: tauri::State<'_, Database>,
+    profile: db::InvoiceProfile,
+) -> Result<i64, String> {
+    if let Some(id) = profile.id {
+        db.update_invoice_profile(&profile).map_err(|e| e.to_string())?;
+        Ok(id)
+    } else {
+        db.insert_invoice_profile(&profile).map_err(|e| e.to_string())
+    }
+}
+
+#[tauri::command]
+pub fn delete_invoice_profile(db: tauri::State<'_, Database>, id: i64) -> Result<(), String> {
+    db.delete_invoice_profile(id).map_err(|e| e.to_string())
+}
+
+// ── Invoices ──
+
+#[tauri::command]
+pub fn get_invoices(
+    db: tauri::State<'_, Database>,
+    limit: Option<i64>,
+) -> Result<Vec<db::Invoice>, String> {
+    db.get_invoices(limit.unwrap_or(50)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_invoice(db: tauri::State<'_, Database>, id: i64) -> Result<Option<db::Invoice>, String> {
+    db.get_invoice(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_invoice(db: tauri::State<'_, Database>, invoice: db::Invoice) -> Result<i64, String> {
+    if let Some(id) = invoice.id {
+        db.update_invoice(&invoice).map_err(|e| e.to_string())?;
+        Ok(id)
+    } else {
+        db.insert_invoice(&invoice).map_err(|e| e.to_string())
+    }
+}
+
+#[tauri::command]
+pub fn delete_invoice(db: tauri::State<'_, Database>, id: i64) -> Result<(), String> {
+    db.delete_invoice(id).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn get_command_runs(
     db: tauri::State<'_, Database>,
@@ -218,4 +278,34 @@ pub fn get_command_runs(
 ) -> Result<Vec<db::CommandRun>, String> {
     db.get_command_runs(command_id, limit.unwrap_or(50))
         .map_err(|e| e.to_string())
+}
+
+// ── Activity Mappings ──
+
+#[tauri::command]
+pub fn get_activity_mappings(db: tauri::State<'_, Database>) -> Result<Vec<db::ActivityMapping>, String> {
+    db.get_activity_mappings().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_activity_mapping(
+    db: tauri::State<'_, Database>,
+    mapping: db::ActivityMapping,
+) -> Result<i64, String> {
+    db.save_activity_mapping(&mapping).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_activity_mapping(db: tauri::State<'_, Database>, id: i64) -> Result<(), String> {
+    db.delete_activity_mapping(id).map_err(|e| e.to_string())
+}
+
+// ── Autofill Runs ──
+
+#[tauri::command]
+pub fn get_autofill_runs(
+    db: tauri::State<'_, Database>,
+    limit: Option<i64>,
+) -> Result<Vec<db::AutofillRun>, String> {
+    db.get_autofill_runs(limit.unwrap_or(10)).map_err(|e| e.to_string())
 }

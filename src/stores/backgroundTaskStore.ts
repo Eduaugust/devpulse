@@ -26,7 +26,16 @@ export const useBackgroundTaskStore = create<BackgroundTaskStore>((set, get) => 
       prNumber: meta?.prNumber,
       startedAt: Date.now(),
     };
-    set((state) => ({ tasks: [task, ...state.tasks] }));
+    set((state) => {
+      // Auto-prune: keep max 50 tasks, drop oldest completed ones
+      let tasks = [task, ...state.tasks];
+      if (tasks.length > 50) {
+        tasks = tasks.filter((t) => t.status === "running").concat(
+          tasks.filter((t) => t.status !== "running").slice(0, 30),
+        );
+      }
+      return { tasks };
+    });
     return id;
   },
 

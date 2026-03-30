@@ -8,10 +8,12 @@ import {
   Terminal as TerminalIcon,
   Save,
   Monitor,
+  X,
 } from "lucide-react";
 import { checkCommandAvailable, openClaudeTerminal } from "@/lib/tauri";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { getPlatform, getTerminalOptions } from "@/lib/platform";
+import { EmbeddedTerminal } from "@/components/EmbeddedTerminal";
 
 export function ClaudeCode() {
   const location = useLocation();
@@ -24,6 +26,9 @@ export function ClaudeCode() {
   const [claudeAvailable, setClaudeAvailable] = useState<boolean | null>(null);
   const [opening, setOpening] = useState(false);
   const [terminalOptions, setTerminalOptions] = useState(getTerminalOptions("macos"));
+  const [embeddedActive, setEmbeddedActive] = useState(false);
+  const [embeddedKey, setEmbeddedKey] = useState(0);
+  const [embeddedPrompt, setEmbeddedPrompt] = useState<string | undefined>();
 
   // Detect platform and set terminal options
   useEffect(() => {
@@ -56,6 +61,12 @@ export function ClaudeCode() {
 
   const openTerminal = useCallback(
     async (initialPrompt?: string) => {
+      if (preferredTerminal === "builtin") {
+        setEmbeddedPrompt(initialPrompt);
+        setEmbeddedKey((k) => k + 1);
+        setEmbeddedActive(true);
+        return;
+      }
       setOpening(true);
       try {
         await openClaudeTerminal({
@@ -157,6 +168,16 @@ export function ClaudeCode() {
             )}
           </div>
 
+          {embeddedActive && (
+            <button
+              onClick={() => setEmbeddedActive(false)}
+              className="flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-md border bg-background hover:bg-secondary transition-colors"
+            >
+              <X className="h-3 w-3" />
+              Close
+            </button>
+          )}
+
           <button
             onClick={() => openTerminal()}
             disabled={claudeAvailable === false || opening}
@@ -170,26 +191,37 @@ export function ClaudeCode() {
 
       {/* Main content */}
       <div className="flex-1 min-h-0 flex items-center justify-center bg-[#0a0a0f]">
-        <div className="text-center space-y-4 max-w-md px-6">
-          <TerminalIcon className="h-16 w-16 text-muted-foreground/20 mx-auto" />
-          <div>
-            <p className="text-sm text-muted-foreground/60">
-              Sessions open in your system terminal
-            </p>
-            <p className="text-xs text-muted-foreground/40 mt-2">
-              Each session runs independently — you can open as many as you
-              need. Set a working directory and click Open Claude to start.
-            </p>
+        {embeddedActive ? (
+          <EmbeddedTerminal
+            key={embeddedKey}
+            command="claude"
+            args={embeddedPrompt ? [embeddedPrompt] : []}
+            cwd={workingDirectory || null}
+            onExit={() => {}}
+          />
+        ) : (
+          <div className="text-center space-y-4 max-w-md px-6">
+            <TerminalIcon className="h-16 w-16 text-muted-foreground/20 mx-auto" />
+            <div>
+              <p className="text-sm text-muted-foreground/60">
+                {preferredTerminal === "builtin"
+                  ? "Run Claude directly inside DevPulse"
+                  : "Sessions open in your system terminal"}
+              </p>
+              <p className="text-xs text-muted-foreground/40 mt-2">
+                Set a working directory and click Open Claude to start.
+              </p>
+            </div>
+            <button
+              onClick={() => openTerminal()}
+              disabled={claudeAvailable === false || opening}
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
+            >
+              <Play className="h-4 w-4" />
+              {opening ? "Opening…" : "Open Claude Terminal"}
+            </button>
           </div>
-          <button
-            onClick={() => openTerminal()}
-            disabled={claudeAvailable === false || opening}
-            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
-          >
-            <Play className="h-4 w-4" />
-            {opening ? "Opening…" : "Open Claude Terminal"}
-          </button>
-        </div>
+        )}
       </div>
     </div>
   );

@@ -13,18 +13,24 @@ import {
   Terminal,
   GitPullRequestArrow,
   Zap,
+  Receipt,
+  GitCommitHorizontal,
 } from "lucide-react";
 
 const navItems = [
-  { to: "/", icon: LayoutDashboard, label: "Dashboard" },
+  { to: "/reports", icon: FileText, label: "Reports" },
+  { to: "/invoices", icon: Receipt, label: "Invoices" },
+  { to: "/connections", icon: Link2, label: "Connections" },
+  { to: "/settings", icon: Settings, label: "Settings" },
+  { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
   { to: "/history", icon: Clock, label: "History" },
   { to: "/claude-code", icon: Terminal, label: "Claude Code" },
   { to: "/pr-review", icon: GitPullRequestArrow, label: "PR Review" },
   { to: "/commands", icon: Zap, label: "Commands" },
-  { to: "/connections", icon: Link2, label: "Connections" },
-  { to: "/settings", icon: Settings, label: "Settings" },
-  { to: "/reports", icon: FileText, label: "Reports" },
+  { to: "/git-activity", icon: GitCommitHorizontal, label: "Git Activity" },
 ];
+
+const coreRoutes = new Set(["/reports", "/invoices", "/connections", "/settings"]);
 
 export function Sidebar() {
   const { orderItems, isVisible } = useSidebarOrder();
@@ -34,7 +40,7 @@ export function Sidebar() {
   const orderedItems = orderItems(navItems, (i) => i.to);
 
   const visibleItems = orderedItems.filter((item) =>
-    item.to === "/settings" || isVisible(item.to)
+    coreRoutes.has(item.to) || isVisible(item.to)
   );
 
   return (
@@ -56,7 +62,6 @@ export function Sidebar() {
           <NavLink
             key={item.to}
             to={item.to}
-            end={item.to === "/"}
             className={({ isActive }) =>
               cn(
                 "flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors",

@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { Outlet } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { BackgroundTasks } from "./BackgroundTasks";
@@ -20,7 +21,9 @@ export function AppShell() {
         </header>
         <main className="flex-1 overflow-y-auto">
           <div className="p-6">
-            <Outlet />
+            <Suspense>
+              <Outlet />
+            </Suspense>
           </div>
         </main>
       </div>

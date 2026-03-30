@@ -16,6 +16,8 @@ export interface LocalRepo {
   added_at: string;
 }
 
+export type GitProvider = "github" | "gitlab" | "azure" | "bitbucket";
+
 export interface MonitoredRepo {
   id: number | null;
   owner: string;
@@ -23,6 +25,7 @@ export interface MonitoredRepo {
   full_name: string;
   added_at: string;
   base_branch: string;
+  provider: GitProvider;
 }
 
 export interface Setting {
@@ -100,6 +103,18 @@ export interface ClaudeConnectionResult {
 export interface AiGenerationResult {
   text: string;
   model: string;
+}
+
+export interface UvResolution {
+  binary_path: string;
+  source: "system_uvx" | "app_managed" | "downloaded";
+}
+
+export interface KimaiMcpSetupResult {
+  uv_resolution: UvResolution | null;
+  config_written: boolean;
+  uv_verified: boolean;
+  error: string | null;
 }
 
 // Claude Code session types
@@ -229,7 +244,7 @@ export interface ReviewResult {
 
 // Background task types
 
-export type BackgroundTaskType = "pr-review" | "post-review" | "report-generation" | "pr-description" | "pr-fixes";
+export type BackgroundTaskType = "pr-review" | "post-review" | "report-generation" | "pr-description" | "pr-fixes" | "fill-timesheet";
 export type BackgroundTaskStatus = "running" | "completed" | "error";
 
 export interface BackgroundTask {
@@ -295,6 +310,105 @@ export interface PrWithReviewStatus {
   headRefName: string;
   author: { login: string };
   commentCount: number;
+}
+
+// Invoice types
+
+export interface InvoiceProfile {
+  id: number | null;
+  profile_type: "sender" | "recipient";
+  name: string;
+  tax_number: string;
+  address_line1: string;
+  address_line2: string;
+  city: string;
+  state: string;
+  country: string;
+  postal_code: string;
+  bank_details_json: string;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface InvoiceLineItem {
+  description: string;
+  quantity: number;
+  rate: number;
+  amount: number;
+}
+
+export interface Invoice {
+  id: number | null;
+  invoice_number: string;
+  sender_profile_id: number;
+  recipient_profile_id: number;
+  invoice_date: string;
+  due_date: string;
+  currency: string;
+  line_items_json: string;
+  subtotal: number;
+  tax_rate: number;
+  tax_amount: number;
+  total: number;
+  notes: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// Activity Mapper + Auto-fill types
+
+export interface ActivityMapping {
+  id: number | null;
+  name: string;
+  description: string;
+  pattern: string;
+  pattern_type: "contains" | "exact" | "starts_with" | "regex";
+  kimai_project_id: number | null;
+  kimai_project_name: string;
+  kimai_activity_id: number | null;
+  kimai_activity_name: string;
+  kimai_tags: string;
+  priority: number;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AutofillRun {
+  id: number | null;
+  target_date: string;
+  status: "running" | "completed" | "error";
+  result_text: string;
+  error_text: string;
+  entries_created: number;
+  duration_ms: number | null;
+  created_at: string;
+  finished_at: string | null;
+}
+
+export interface AutofillResult {
+  run_id: number;
+  success: boolean;
+  message: string;
+  entries_created: number;
+}
+
+export interface GatherResult {
+  git_data: string;
+  github_data: string;
+  kimai_data: string;
+  calendar_data: string;
+  existing_kimai_entries: string;
+  activity_mappings: string;
+}
+
+export interface GitLogEntry {
+  hash: string;
+  date: string;
+  message: string;
+  repo_name: string;
 }
 
 export interface PrDetail {

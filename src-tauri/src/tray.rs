@@ -50,10 +50,11 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     } else {
                         // Position panel relative to tray icon
                         if let Ok(Some(rect)) = tray.rect() {
-                            let pos: tauri::PhysicalPosition<i32> = rect.position.to_physical(1.0);
-                            let size: tauri::PhysicalSize<u32> = rect.size.to_physical(1.0);
-                            let panel_width = 340;
-                            let panel_height = 560;
+                            let scale = panel.scale_factor().unwrap_or(1.0);
+                            let pos: tauri::PhysicalPosition<i32> = rect.position.to_physical(scale);
+                            let size: tauri::PhysicalSize<u32> = rect.size.to_physical(scale);
+                            let panel_width = (340.0 * scale) as i32;
+                            let panel_height = (560.0 * scale) as i32;
                             let icon_width = size.width as i32;
                             // Center horizontally on the tray icon
                             let x = pos.x - (panel_width / 2) + (icon_width / 2);
